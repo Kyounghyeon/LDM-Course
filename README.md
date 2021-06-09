@@ -9,7 +9,7 @@
 
 사용한 언어는 모두 R이며, 다음과 같은 코드를 통하여 개인 프로젝트의 결론을 `shiny app`을 통하여 보실 수 있습니다.
 
-This repo consist with homework and project from the course **Large Data Management and Visualization(STA3034)** in SKKU.
+This repo consist with assignments and a project from the course **Large Data Management and Visualization(STA3034)** in SKKU.
 The topic of the project is "Proposal for the new bicycle road by analyzing regional characteristics of public bicycle in Seoul"
 You can see the conclustion of this project through `R` code below.
 
