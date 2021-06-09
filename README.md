@@ -29,4 +29,4 @@ runGithub("LDM-shiny, "Kyounghyeon", ref = "main")
 
 - This repo consists with assignments and a project from the course **Large Data Management and Visualization(STA3034)** in SKKU.
 - The topic of the project is "Proposal for the new bicycle road by analyzing regional characteristics of public bicycle in Seoul"
-- You can see the conclustion of this project through `R` code above.
+- You can briefly see the conclusion of this project through `R` code above.
