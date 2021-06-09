@@ -7,10 +7,21 @@
 
 로 구성되어 있습니다.
 
-사용한 언어는 모두 R이며, 다음과 같은 코드를 통하여 개인 프로젝트의 결론을 보실 수 있습니다.
+사용한 언어는 모두 R이며, 다음과 같은 코드를 통하여 개인 프로젝트의 결론을 `shiny app`을 통하여 보실 수 있습니다.
+
 
 ```
-install.packages(shiny)
-library(shiny)
-runGithub("LDM-Course/project/shiny", "Kyounghyeon", ref = "main") 
+packages = c("tidyverse", "shiny", "data.table")
+
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+
+runGithub("LDM-shiny, "Kyounghyeon", ref = "main") 
 ```
