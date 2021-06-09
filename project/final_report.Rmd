@@ -1,0 +1,2048 @@
+---
+title: | 
+       | 서울시 공공자전거의 수요 패턴 분석을 통한
+       | 자전거 전용 도로 신설 제안
+
+author: "고경현"
+date: '2021.4.21'
+output: html_document
+---
+
+```{=html}
+<style type="text/css">
+
+h1.title {
+
+font-size: 38px;
+
+text-align: center;
+
+}
+
+h4.author { /\* Header 4 - and the author and data headers use this too \*/
+
+font-size: 18px;
+
+color: Black;
+
+text-align: center;
+
+}
+
+h4.date { /\* Header 4 - and the author and data headers use this too \*/
+
+font-size: 18px;
+
+color: Black;
+
+text-align: center;
+
+}
+
+</style>
+```
+```{r library, message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(magrittr)
+library(knitr)
+library(lubridate)
+library(data.table)
+library(MLmetrics)
+library(ggmap)
+library(maptools)
+library(raster)
+library(rgdal)
+library(rgeos)
+library(leaflet)
+library(gridExtra)
+library(cowplot)
+library(rmarkdown)
+library(VIM)
+library(DT)
+library(hrbrthemes)
+library(RColorBrewer)
+library(jsonlite)
+library(httr)
+library(spdplyr)
+library(sp)
+library(progress)
+library(car)
+library(MASS)
+library(gvlma)
+library(leaps)
+library(VGAM)
+library(factoextra)
+library(cluster)
+
+
+knitr::opts_chunk$set(echo = F,
+                      warning = F,
+                      message = F,
+                      fig.align = 'center')
+
+```
+
+```{r data load, message=FALSE, warning=FALSE}
+
+
+bike = fread("final_dataset/bike.csv") # 시간별 대여기록
+bike_place = fread("final_dataset/bike_place.csv") # 대여소 정보
+hanriver = fread("final_dataset/hanriver.csv") # 한강공원 좌표
+
+seoul_id = fread("final_dataset/seoul_id.csv") # 서울 행정동 및 자치구 코드
+seoul_emd_map = fread("final_dataset/seoul_emd_map.csv") 
+seoul_map = fread("final_dataset/seoul_map.csv") # 시군구
+bike_road = fread("final_dataset/bike_road.csv") # 자전거도로
+accident = fread("final_dataset/accident_many.csv")# 자전거 교통사고 다발지
+accidentInfo = fread("final_dataset/accidentInfo.csv") # 2019년 자전거 피해/가해 교통사고 전체 기록
+pop_hdong = fread('final_dataset/popl_2020.csv') # 2020년 행정동별, 월별 평균생활인구수
+pop_gu = fread('final_dataset/pop_gu.csv')  # 2020년 지역구별, 월별 평균생활인구수
+crossroad = fread("final_dataset/crossroad.csv")
+station = fread("final_dataset/station.csv") # 서울시 좌표구역 내 지하철 목록
+bus = fread("final_dataset/서울시버스정류소좌표데이터(2021.01.14.).csv") # 서울시 버스 정류소 좌표 정보
+cafe_conv = fread("final_dataset/cafe_conv.csv")
+bike_near_cafe_count = fread("final_dataset/bike_near_cafe_count.csv")
+
+
+
+
+
+
+
+
+# 기본 테마 저장장
+my_theme = theme_minimal() + 
+  theme(
+    plot.title = element_text(hjust=0.5, face = "bold"),
+    plot.subtitle = element_text(hjust=0.5),
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(face = "bold", size=11),
+    axis.text.y = element_text(hjust = 1, face = "bold"))
+
+
+
+
+
+
+
+```
+
+<center>
+
+대용량 자료관리 및 시각화
+
+</center>
+
+# **배경**
+
+공공자전거(Puplic bicycle)
+
+:   주민들의 편의를 도모하고 교통 체증, 대기오염 문제를 해결하기 위해 정부나 지역 내 민간단체가 대여, 반납 체계를 갖춰 주민들에게 빌려주는 자전거를 말한다.
+
+서울시의 공공자전거 따릉이부터, 세종시의 어울링, 광주광역시의 타랑께 등 각자 개성이 넘치는 이름들의 공공자전거가 10곳이 넘는 지자체에서 운영중이다. 이번 보고서에서는 서울시의 따릉이를 중심으로 수요 패턴을 분석해보고 나아가 자전거 전용 도로의 신설 입지를 제안해보고자 한다.
+
+서울시에서는 탄소 배출 감량을 통한 녹색 성장 프로젝트의 일환으로 지난 2014년 '서울바이크'라는 이름으로 시범 운영을 시작했다. 이후 서울시 공공자전거 명칭 공모전을 통해 '따릉이'라는 이름으로 2015년 10월 2천대의 공공자전거를 운영하기 시작했다.
+
+2015년을 시작으로 현재 2021년 약 3만2천대의 공공자전거가 서울 곳곳에 배치되어 있다. 2020년 3월부터는 다양한 개선을 통해 기존에 자전거와 자전거 거치대를 유선으로 연결했던 LCD 시스템에서, 별도의 거치대 없이 QR코드와 고리형 잠금 장치로 잠금 형태가 개편되었다. 또한 2020년 11월부터는 무게와 크기를 줄여 낮은 연령대를 대상으로 하는 '새싹 따릉이'도 새로이 출시하였다.
+
+코로나로 인한 비대면 플랫폼들이 활성화 됨에 따라 시민들의 자전거와 등 개인형 이동수단을 이용하는 사람이 급증하고 있다. 이러한 움직임은 지난 3월 서울시 교통정보 시스템에서 발표한 '2020년 서울시 대중교통 성적표' 에서도 확연히 드러난다. 이 발표에 의하면 버스와 지하철을 아우르는 대중교통의 이용건수는 전년대비 25.9% 감소했지만, 서울시가 운영하는 공공자전거 '따릉이'의 이용건수는 전년대비 24.6% 증가했다.
+
+<center>
+
+![출처: 서울시 교통정보 시스템](C:/Users/whoe9/Desktop/stat_project/plot/bike1.png){width="400"}
+
+</center>
+
+지하철과 버스의 절대적인 이용량이 많은 것은 사실이지만 포스트 코로나 시대로 접어들면서 나타난 이러한 공공자전거 이용률의 증가는 충분히 유의미한 것이라고 생각한다. 그렇다면 이렇게 자전거 이용량에 따라 등장하는 문제점은 없을까?
+
+<center>
+
+![공공자전거 개인 계정 이용기록](C:/Users/whoe9/Desktop/stat_project/etc/%EB%94%B0%EB%A6%89%EC%9D%B4_%EC%9D%B4%EC%9A%A9%EB%82%B4%EC%97%AD.PNG){width="560"}
+
+</center>
+
+위 사진은 서울 자전거 따릉이 사이트의 개인 이용 기록이다. 지난 2019년부터 꾸준히 따릉이를 이용한 나는 서울 곳곳에서 자전거 통행로의 부재를 실감했다. 자전거는 도로교통법 상 '차'로 분류되어 보도와 차도가 구분된 곳에서는 반드시 차도 오른쪽 가장자리에서 운전해야한다. 차도 가장 바깥쪽에 따로 구역을 마련하여 자전거 전용도로가 있는 곳이 있는 반면, 차도 노면에 '자전거 우선도로'라는 표시만 있는 채 자전거의 통행을 지시하는 곳도 있었다. 하지만 이러한 '자전거 우선도로'에서 자전거를 운전할 시에 뒤에서 빠르게 달려오는 자동차를 인지하기 어려우며, 버스나 택시 등 승객의 승하차를 위해 도로 가장자리를 자주 이용하는 차들 또한 도로 위에서 자전거를 운전할 때의 위험 요인이다. 이러한 문제점 속에서 자전거 전용도로 신설 필요성을 느꼈으며, 공공자전거 대여소의 주변 환경적 특징을 분석해봄으로써 자전거 전용도로의 새로운 입지를 선정해보고자 한다.
+
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+
+<center>
+
+# **이용 데이터**
+
+</center>
+
+<center>
+
++------+------------------------------------------+------+----------------+-----------+---------------------------------+--------------------+
+| 번호 | 이름                                     | 형식 | 변수명         | 크기      | 출처                            | 데이터 기간(기준)  |
++:=====+==========================================+======+================+===========+=================================+====================+
+| 1    | 서울특별시 공공자전거 이용정보(시간대별) | csv  | `bike`         | 951202x9  | 서울열린데이터광장              | 20200101-20201231  |
++------+------------------------------------------+------+----------------+-----------+---------------------------------+--------------------+
+| 2    | 서울특별시 공공자전거 대여소정보         | csv  | `bike_place`   | 2155x8    | 서울열린데이터광장              | 20201231           |
++------+------------------------------------------+------+----------------+-----------+---------------------------------+--------------------+
+| 3    | 서울특별시 행정동 고유 코드북            | csv  | `seoul_id`     | 424x5     | Vuski Github                    | 20201231           |
++------+------------------------------------------+------+----------------+-----------+---------------------------------+--------------------+
+| 4    | 서울특별시 자전거사고 다발지             | csv  | `accident`     | 432x10    | 도로교통공단 교통사고분석시스템 | 20191231           |
++------+------------------------------------------+------+----------------+-----------+---------------------------------+--------------------+
+| 5    | 서울특별시 자전거사고(가해, 피해) 기록   | xlsx | `accidentInfo` | 3091x33   | 도로교통공단 교통사고분석시스템 | 20190101-20191231  |
++------+------------------------------------------+------+----------------+-----------+---------------------------------+--------------------+
+| 6    | 수도권 지하철 좌표                       | csv  | `station`      | 339x5     | Gaussian37 Github               | 20201231           |
++------+------------------------------------------+------+----------------+-----------+---------------------------------+--------------------+
+| 7    | 서울시버스정류소좌표데이터               | csv  | `bus`          | 10921x5   | 서울열린데이터광장              | 20210114           |
++------+------------------------------------------+------+----------------+-----------+---------------------------------+--------------------+
+| 8    | 한강공원 좌표                            | csv  | `hanriver`     | 12x3      | 자체제작(구글api이용)           | 20201231           |
++------+------------------------------------------+------+----------------+-----------+---------------------------------+--------------------+
+| 9    | 서울특별시 행정동별 생활인구(내국인)     | csv  | `pop_hdong`    | 5088x7    | 서울열린데이터광장              | 20200101-20201231  |
++------+------------------------------------------+------+----------------+-----------+---------------------------------+--------------------+
+|      | 서울특별시 휴게음식점 인허가 정보        | csv  | `cafe`         | 111461x44 | 서울열린데이터광장              | 20210501 영업 기준 |
++------+------------------------------------------+------+----------------+-----------+---------------------------------+--------------------+
+|      | 서울시 교차로 관련 정보                  | shp  | `crossroad`    | \-        | 서울열린데이터광장              | 20190529           |
++------+------------------------------------------+------+----------------+-----------+---------------------------------+--------------------+
+|      | 서울특별시 지도                          | shp  | `seoul_map`    | \-        | GIS Developer                   | 20201231           |
++------+------------------------------------------+------+----------------+-----------+---------------------------------+--------------------+
+|      | 서울특별시 자전거도로                    | shp  | `bike_map`     | \-        | ArcGis REST Services Directory  | 20201231           |
++------+------------------------------------------+------+----------------+-----------+---------------------------------+--------------------+
+
+</center>
+
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+
+# **데이터 탐색**
+
+데이터를 효율적으로 다루기 위한 결측값 처리, 데이터 병합 등의 데이터 탐색 과정이다.
+
+## **1. 결측값 처리**
+
+기존 raw 데이터의 문제로 결측값이 존재하는 관측치들이 여럿 존재한다. 결측값 문제는 앞으로의 분석이나 데이터의 병합에서 정보의 손실로 이어질 수 있기 때문에 가장 먼저 처리해야 할 문제이다. 총 두 개의 데이터에서 결측값이 발견되었으며, 아래는 그 결측치들을 처리해나가는 과정이다.
+
+### **1. `bike_place` 공공자전거 대여소 데이터**
+
+기존 대여소 정보에 100여개의 대여소 별 위경도 좌표 값이 누락되어 있어 NA값이 존재하여 구글 API와 카카오 API를 이용하여 결측값을 처리했다. 카카오 API가 비교적 빠른 응답 속도를 보였지만 표기가 부정확한 주소에 대해 유연하게 반응하지 못했기에, 비교적 느리지만 정확한 구글 API를 사용하고 남은 부분을 카카오 API를 이용하여 결측치를 처리했다.
+
+``` {.r}
+## 1. 구글 API 이용
+#결측치 plot 확인
+bike_place %>% aggr(prop = F, numbers = T, col = c( "#B0E0E6", "#A52A2A"))
+
+#좌표 결측치가 있는 한글 주소 벡터로 저장
+bike_place_table = bike_place %>% as.data.table
+ADDRESS_with_NA = bike_place_table[is.na(long),ADDRESS] %>% as.vector
+
+#결측치가 존재하는 대여소 좌표 불러오기
+coord = geocode(enc2utf8(ADDRESS_with_NA))
+-----------------------------------------------------------------------------------
+## 2. 카카오 API 이용
+#좌표 결측치가 있는 한글 주소 벡터로 저장
+bike_place_table = bike_place %>% as.data.table
+ADDRESS_with_NA = bike_place_table[is.na(long),ADDRESS] %>% as.vector
+
+#NA Imputation with coordinate
+#빈 dataframe 공간 생성 후 for 문으로 채워넣기
+ADDRESS_with_coord = tibble() 
+
+for ( i in 1:length(ADDRESS_with_NA)){
+  addr = ADDRESS_with_NA[i]
+  #카카오 API로부터 위경도 좌표 받아오는 함수 만들어 사용
+  present_coordinate = get_coord_from_addr(addr)
+  ADDRESS_with_coord = rbind(ADDRESS_with_coord, present_coordinate)
+}
+# 최종 결측치 plot 확인
+na_plot_final = bike_place %>% aggr(prop = F, numbers = T, col = c( "#B0E0E6", "#A52A2A"))
+```
+
+```{r echo=FALSE, fig.align='center'}
+include_graphics(c("plot/plot1.png"))
+```
+
+(좌) 결측치 처리 전 결측값 `NA` (붉은색) 분포. 112개 대여소의 위도`lat` 와 경도`long` 값이 `NA` 이다.
+
+(우) 결측치 처리 후 결측값이 존재하지 않는 것(모든 열이 파란색)을 확인 할 수 있다.
+
+### **2. `bike` 공공자전거 이용기록(시간별) 데이터**
+
+```{r include=FALSE}
+bike$gender %<>% toupper
+```
+
+```{r}
+unique(bike$gender)
+```
+
+2018년 7월 이후 공공자전거 가입 시 성별 기입이 선택 사항으로 변경되었다. 그렇기 때문에 성별 정보가 없는 위와 같은 관측치가 존재하여 아래 코드를 통해 비어있는 성별 값을 `"None"`로 대체하였다.
+
+``` {.r}
+bike$gender[!(bike$gender %in% LETTERS)] = "None"
+```
+
+```{r include=FALSE}
+bike %<>% 
+  mutate(gender = toupper(gender))  
+
+bike$gender[!(bike$gender %in% LETTERS)] = "None"
+```
+
+------------------------------------------------------------------------
+
+## **2. 데이터 병합**
+
+데이터를 효율적으로 다루기 위해, 그리고 데이터의 특성을 쉽게 파악하기 위해 다양한 데이터를 목적에 맞게 병합하는 과정이다.
+
+### **1. 공공자전거 이용기록(시간별) 데이터와 공공자전거 대여소 데이터 병합**
+
+```{r include=FALSE}
+bike = left_join(bike, bike_place, by = "대여소번호") %>% 
+  relocate(rent_date, rent_hour, 대여소이름, GU) %>% 
+  arrange(rent_date, rent_hour, 대여소번호) %>% drop_na
+```
+
+``` {.r}
+bike = left_join(bike, bike_place, by = c("rent_id" = "ID")) %>% 
+  relocate(rent_date, rent_hour, rent_id, NAME, GU) %>% 
+  arrange(rent_date, rent_hour, rent_id)
+```
+
+`bike` 대여 이력 데이터에는 대여소 고유 번호와 대여소 이름만이 존재해 대여가 어디에서 발생했는지 위치를 파악하기 어렵다는 문제가 있었다. 이를 해결하기 위해 대여소 별 위경도 좌표가 있는 `bike_place` 데이터와 병합을 진행했다. 병합 한 결과는 다음과 같다.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+bike %>% head %>% paged_table()
+```
+
+### **2. 공공자전거 대여소와 연관된 지역적 특성 데이터 병합**
+
+다음으로는 기존 대여소 데이터에 대여소의 지역적 특성을 담기 위해 다양한 데이터를 병합하였다. 병합한 데이터는 크게 '공공자전거 대여소가 속한 행정동의 지역적 특성 데이터', '대여소별 2020년 총 이용 건수' 그리고 '대여소와 다른 시설 또는 지점과의 거리 정보' 세 가지로 구분할 수 있다.
+
+#### **1. 공공자전거 대여소가 속한 행정동의 지역적 특성 데이터**
+
+우선 첫 번째로 대여소가 속한 행정동의 지역적 특성 데이터이다. 주거지역과 상업지역 가릴 것 없이 널리 설치되어 있는 공공자전거 대여소는 대여소가 속한 지역적 특징을 행정동 단위로 조사하여 병합하는 과정이 기술되어 있다.
+
+-   *행정동별 생활인구(내국인)*
+
+서울열린데이터 광장에서 행정동별 생활인구(내국인) 데이터를 이용하여 공공자전거 대여소가 속한 행정동별 활동 인구를 고려하고자 하였다. 각 행정동별 총 생활인구는 2020년 전체의 자료를 가져와 행정동 별로 평균을 내었다. [서울 생활인구추계 메뉴얼](https://data.seoul.go.kr/together/statbook/fileDownload.do?cotCd=999&filename=%EC%84%9C%EC%9A%B8%EC%83%9D%ED%99%9C%EC%9D%B8%EA%B5%AC%EC%B6%94%EA%B3%84_%EB%A7%A4%EB%89%B4%EC%96%BC_V1.1.pdf&mnuSrl=1&mnuNm=%ED%85%8C%EC%8A%A4%ED%8A%B81&mnuFg=C&upMnuSrl=1)에 의하면 생활인구는 다음과 같이 정의된다.
+
+**생활인구**
+
+:   조사 시점 현재 특정 지역에 머무르고 있는 '현재 인구(De Facto Polulation)'로 서울에 주소지를 둔 사람은 물론 업무, 관광, 의료, 교육 등 일시적으로 서울을 찾아 행정수요를 유발하는 인구를 총칭한다.
+
+서울시는 주민등록인구를 기준으로 행정 서비스를 기획하고 있지만, 주민등록인구는 감소하는 추세이다. 그러나 도시 활력과 생산성의 지표인 '주간인구'와 '경제활동인구'는 오히려 증가하고 있는 추세이다. 그렇기 때문에 일반적으로 한 지점에 고정되어 있는 주민등록인구보다는 실질적으로 서울 인구의 유동성을 나타내는 지표인 행정동별 생활인구를 고려하였다. 또한 공공자전거의 주 이용층이 내국인인 것을 고려하여 외국인 생활인구는 제외하였다.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# 대여소 + 행정동별 평균 인구수
+bike_place_hdong = left_join(bike_place , 
+          pop_hdong  %>% 
+            group_by(시군구명, 행정동코드, 행정동명) %>%
+            summarise(평균생활인구수 = mean(평균생활인구수)) %>% dplyr::select(-행정동명, -시군구명),
+          by = "행정동코드")
+# NA 없음 (위)
+```
+
+-   **행정동별 총 자전거 사고 다발지 수**
+
+행정동별 두 번째 특성 데이터는 행정동별 총 자전거 사고 다발지 수이다. 여기서 자전거 사고는 교통사고 발생 시 가해운전자 또는 피해운전자의 차종이 자전거일 경우를 일컫어 자전거 사고라고 한다. 자전거 사고 다발지란 이같은 자전거 사고가 반경 200m 내에서 4건 이상 발생한 경우 이 반경을 자전거 사고 다발지라고 한다(출처: 도로교통공사 교통사고 분석시스템). 도로교통공사 교통사고 분석시스템의 자전거 사고 다발지 데이터가 2019년 것까지 제공되고 있어 2019년 데이터를 사용하였다.
+
+```{r message=FALSE, warning=FALSE}
+# 대여소 + 행정동별 자전거 총 사전거 사고 수
+bike_place_hdong = left_join(bike_place_hdong %>% ungroup,
+                            accident %>% group_by(행정동코드) %>% summarise(총사고다발지개수 = n()), 
+                            by = "행정동코드") %>% 
+  replace_na(list(총사고다발지개수 = 0))
+
+```
+
+-   **행정동별 총 자전거 사고 수**
+
+행정동별 세 번째 특성 데이터는 행정동별 총 자전거 사고 수이다. 도로교통공사 교통사고 분석시스템의 자전거 사고 다발지 데이터가 2019년 것까지 제공되고 있어 자전거 사고 기록 데이터도 시점을 맞추기 위하여 2019년 데이터를 사용하였다.<br>
+
+```{r message=FALSE, warning=FALSE}
+# 대여소 + 행정동별 자전거 총 사전거 사고 수
+bike_place_acciinfo = left_join(bike_place_hdong %>% ungroup,
+                            accidentInfo %>% group_by(행정동코드) %>% summarise(총사고건수 = n()), 
+                            by = "행정동코드") %>% 
+  replace_na(list(총사고건수 = 0))
+```
+
+<p>
+
+#### **2. 대여소별 2020년 총 이용 건수**
+
+두 번째로는 기존 대여이력 데이터를 활용하여 대여소별 2020년 총 이용건수를 각 대여소의 새로운 변수로 추가하였다. 이 과정에서 이동거리가 비정상적으로 긴 대여 기록이 존재하였다. 이는 자전거에 내장된 기기 자체의 결함으로 발생하였다고 판단하여 이동시간과 이동거리를 통해 평균 속도를 구하고 평균 속도가 20km/h를 초과하는 대여 기록은 제거하였다. 또한 이동거리나 이용시간이 0인 기록도 존재하였다. 이러한 기록들은 다음의 이유로 발생했다고 가정하였고, 이는 공공자전거 이용을 통해 분석하는 방향성에 맞지 않는다고 생각하여 제거하였다.
+
+-   기기 상의 오류로 이동거리 및 시간이 기록되지 않은 경우
+
+-   사용 방법을 숙지하지 못해 대여 후 바로 반납 한 경우
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# 이동거리나 이용시간이 0인 것들은 기기상의 오류, 사용방법을 몰라서 반납 후 아무것도 행동하지 않은 경우 등의 문제라고 판단
+# 그래서 분석에는 도움이 되지 않을 것이기라고 판단하여 제거
+bike_filtered = bike %>% 
+  arrange(rent_date) %>% 
+  filter(distance_moved != 0) %>% 
+  filter(time_used != 0)
+
+# 이동거리가 비정상적으로 긴 것들 존재 -> 속도를 계산해서 20km/h 이상 제거
+bike_filtered %>% arrange(desc(distance_moved)) %>% head()
+
+#평균속도 계산해서 시속 20km 이상인 기록 제거
+bike_filtered = bike_filtered %>% mutate(
+  vel = (distance_moved / 1000) / (time_used / 60)
+) %>% filter(vel <= 20)
+
+# 대여소 + 대여소별 총 이용건수 
+bike_place_demand = bike_place_acciinfo %>% left_join(bike_filtered %>% group_by(대여소번호) %>% summarise(총이용건수 = n()), key = "대여소번호")
+
+# 대여기록이 하나도 없어서 삭제
+bike_place_demand = drop_na(bike_place_demand)
+
+```
+
+#### **3. 대여소와의 거리를 통한 인접 지점 개수**
+
+2,000여개의 대여소 정보와 병합한 마지막 데이터는 대여소 인접 지점 개수이다. 대여소와 대중교통, 한강공원, 교통사고 다발지 등의 지점에 대해 `sp` 패키지의 `spDist()`함수를 이용하여 좌표에 기반한 직선 거리를 기준으로 인접 지점 개수를 세었다. 크게 4가지 종류의 인접 지점을 고려하였다. 전반적인 과정은 아래와 같이 진행하였다.
+
+``` {.r}
+# 좌표 기반 거리 nxn행렬 생성
+longlat = bike_place_demand[,5:6] %>% as.matrix
+bike_place_name = bike_place_demand$대여소번호
+bike_place_distance = spDists(longlat, longlat= T)
+
+# 좌표 기반 거리를 gather해서 pair로 된 거리 행렬 저장
+bike_place_dist_tb = bike_place_distance %>% as_tibble() %>%
+  gather(key = "대여소번호1", value="거리",1:2051) %>% 
+  mutate(대여소번호2 = rep(bike_place_name, 2051),
+              .after = "대여소번호1") %>% 
+  mutate(거리 = 거리*1000)
+
+# 500m 이내 대여소 개수 카운트
+near_distance350 = bike_place_dist_tb %>% 
+  filter(거리 != 0 ) %>% 
+  filter(거리 <= 500) %>% 
+  group_by(대여소번호1) %>%
+  rename(대여소번호 = "대여소번호1") %>% 
+  mutate(대여소번호 = parse_number(대여소번호)) %>% 
+  summarise(`인접대여소개수` = n())
+```
+
+```{r nearplace, warning=FALSE, message=FALSE}
+# 좌표 기반 거리 행렬 생성
+longlat = bike_place_demand[,5:6] %>% as.matrix
+bike_place_name = bike_place_demand$대여소번호
+bike_place_distance = spDists(longlat, longlat= T)
+colnames(bike_place_distance) = bike_place_name
+rownames(bike_place_distance) = bike_place_name
+
+# 좌표 기반 거리를 gather 해서 pair로 된 거리 행렬 저장
+bike_place_dist_tb = bike_place_distance %>% as_tibble() %>%
+  gather(key = "대여소번호1", value="거리",1:2023) %>% 
+  mutate(대여소번호2 = rep(bike_place_name, 2023),
+              .after = "대여소번호1") %>% 
+  mutate(거리 = 거리*1000)
+
+# 500m 이내 대여소 개수 카운트
+near_distance500 = bike_place_dist_tb %>% 
+  filter(거리 != 0 ) %>% 
+  filter(거리 <= 500) %>% 
+  group_by(대여소번호1) %>%
+  rename(대여소번호 = "대여소번호1") %>% 
+  mutate(대여소번호 = parse_number(대여소번호)) %>% 
+  summarise(`인접대여소개수` = n())
+
+# join
+bike_place_near = left_join(bike_place_demand, near_distance500, key = "대여소번호")
+
+# NA 없음
+```
+
+```{r subway, message=FALSE, warning=FALSE}
+
+# 거리 계산을 위한 대여소, 지하철역 좌표 저장
+st_name = station$name
+st_longlat = station[,4:5] %>% relocate(long, lat) %>% as.matrix
+rownames(st_longlat) = st_name
+bike_name = bike_place_near$대여소이름
+bike_longlat = bike_place_near[,5:6] %>% relocate(long, lat) %>% as.matrix
+rownames(bike_longlat) = bike_name
+
+# 좌표에 따른 거리 계산
+bike_station_dist = spDists(bike_longlat, st_longlat, longlat = T)
+rownames(bike_station_dist) = bike_name
+colnames(bike_station_dist) = st_name
+
+
+# pairwise로 gathering
+bike_station_dist = bike_station_dist %>% as_tibble %>% 
+  gather(key = "역명", value = "거리", 1:339) %>% 
+  mutate(대여소이름 = rep(bike_name,339),
+         거리_m = 거리 * 1000,
+         .before = "역명",
+         .keep = "unused")
+
+# 대여소와의 거리가 1000m 미만인 대여소 개수 계산
+# 기존 대여소 데이터와 join
+bike_place_station = left_join(bike_place_near, bike_station_dist%>% 
+  filter(거리_m < 1000) %>% 
+  group_by(대여소이름) %>% 
+  summarise(인접역개수 = n()),
+  by = "대여소이름")
+```
+
+```{r bus, message=FALSE, warning=FALSE}
+
+bus_name = bus$정류소명
+bus_longlat = bus[,4:5] %>% as.matrix
+rownames(bus_longlat) = bus_name
+bike_name = bike_place_station$대여소이름
+bike_longlat = bike_place_station[,5:6] %>% relocate(long, lat) %>% as.matrix
+rownames(bike_longlat) = bike_name
+
+# 좌표에 따른 거리 계산
+bike_bus_dist = spDists(bike_longlat, bus_longlat, longlat = T)
+rownames(bike_bus_dist) = bike_name
+colnames(bike_bus_dist) = bus_name
+
+
+# pairwise로 gathering
+bike_bus_dist = bike_bus_dist %>% as_tibble %>% 
+  gather(key = "정류소명", value = "거리", 1:10921) %>% 
+  mutate(대여소이름 = rep(bike_name,10921),
+         거리_m = 거리 * 1000,
+         .before = "정류소명",
+         .keep = "unused")
+
+# 대여소와의 거리가 1000m 미만인 대여소 개수 계산
+# 기존 대여소 데이터와 join
+bike_place_bus = left_join(bike_place_station, bike_bus_dist%>% 
+  filter(거리_m < 1000) %>% 
+  group_by(대여소이름) %>% 
+  summarise(인접정류장개수 = n()),
+  by = "대여소이름") %>% replace_na(list(인접정류장개수 = 0))
+
+
+
+```
+
+```{r hanriver, message=FALSE, warning=FALSE}
+
+hanriver_name = hanriver$한강공원이름
+hanriver_longlat = hanriver[,2:3] %>% as.matrix
+rownames(hanriver_longlat) = hanriver_name
+bike_name = bike_place_bus$대여소이름
+bike_longlat = bike_place_bus[,5:6] %>% relocate(long, lat) %>% as.matrix
+rownames(bike_longlat) = bike_name
+
+# 좌표에 따른 거리 계산
+bike_hanriver_dist = spDists(bike_longlat, hanriver_longlat, longlat = T)
+rownames(bike_hanriver_dist) = bike_name
+colnames(bike_hanriver_dist) = hanriver_name
+
+
+# pairwise로 gathering
+bike_hanriver_dist = bike_hanriver_dist %>% as_tibble %>% 
+  gather(key = "정류소명", value = "거리", 1:12) %>% 
+  mutate(대여소이름 = rep(bike_name,12),
+         거리_m = 거리 * 1000,
+         .before = "정류소명",
+         .keep = "unused")
+
+# 대여소와의 거리가 2000m 미만인 대여소 개수 계산
+# 기존 대여소 데이터와 join
+bike_place_hanriver = left_join(bike_place_bus, bike_hanriver_dist%>% 
+  filter(거리_m < 2000) %>% 
+  group_by(대여소이름) %>% 
+  summarise(인접한강공원개수 = n()),
+  by = "대여소이름") 
+
+```
+
+```{r cafe, message=FALSE, warning=FALSE}
+
+# cafe_conv
+# cafeconv_name = cafe_conv$업태구분명
+# cafeconv_longlat = cafe_conv[,2:3] %>% as.matrix
+# bike_name = bike_place_hanriver$대여소이름
+# bike_longlat = bike_place_hanriver[,5:6] %>% relocate(long, lat) %>% as.matrix
+# rownames(bike_longlat) = bike_name
+# rownames(cafeconv_longlat) = cafeconv_name
+
+# 좌표에 따른 거리 계산
+# bike_cafe_dist = spDists(bike_longlat, cafeconv_longlat, longlat = T)
+# rownames(bike_cafe_dist) = bike_name
+# colnames(bike_cafe_dist) = cafeconv_name
+
+
+# pairwise로 gathering
+# bike_cafe_dist_pair = bike_cafe_dist %>% as_tibble %>% 
+#   gather(key = "업태구분명", value = "거리", 1:36909) %>% 
+#   mutate(대여소이름 = rep(bike_name,36909),
+#          거리_m = 거리 * 1000,
+#          .before = "업태구분명",
+#          .keep = "unused") %>% 
+#   mutate( 업종종류 = ifelse(str_extract(업태구분명, "편의점") == "편의점", "편의점", "카페"))
+# 
+# bike_cafe_dist_pair %<>% replace_na(list(업종종류 = "카페"))
+
+# 대여소와의 거리가 475m 미만인 대여소 개수 계산
+# 도보 5분 내, 걸음 시속 4.5km 로 가정
+
+
+# bike_near_cafe_count = bike_cafe_dist_pair%>% 
+#   filter(거리_m < 475) %>% 
+#   group_by(대여소이름, 업종종류) %>% 
+#   summarise(인접시설개수 = n()) %>% spread("업종종류", "인접시설개수", 2:3) %>%
+#   rename(인접카페개수 = 카페,
+#                인접편의점개수 = 편의점)
+# 
+# write.csv(bike_near_cafe_count, "final_dataset/bike_near_cafe_count.csv", row.names = F)
+
+# 기존 대여소 데이터와 join
+bike_place_acci = left_join(bike_place_hanriver, bike_near_cafe_count, by = "대여소이름")  %>%
+  replace_na(list(인접한강공원개수 = 0,
+                          인접정류장개수 = 0,
+                          인접역개수 = 0,
+                          인접대여소개수 = 0,
+                          인접카페개수 = 0,
+                          인접편의점개수 = 0 ))
+
+remove(bike_place_station)
+remove(bike_place_acciinfo)
+remove(bike_bus_dist)
+remove(bike_hanriver_dist)
+remove(bike_station_dist)
+remove(bike_place_station)
+remove(bike_place_bus)
+remove(bike_place_demand)
+remove(bike_place_dist_tb)
+remove(bike_place_distance)
+remove(bike_place_near)
+remove(bike_place_hanriver)
+remove(bike_place_hdong)
+
+```
+
+```{r accidentmany, message=FALSE, warning=FALSE, include=FALSE}
+
+# accident_longlat = accident[,c("long", "lat")]
+# bike_name = bike_place_cafe$대여소이름
+# bike_longlat = bike_place_cafe[,5:6] %>% relocate(long, lat) %>% as.matrix
+# rownames(bike_longlat) = bike_name
+# 
+# # 좌표에 따른 거리 계산
+# bike_acci_dist = spDists(bike_longlat, accident_longlat, longlat = T)
+# rownames(bike_acci_dist) = bike_name
+# 
+# 
+# # pairwise로 gathering
+# bike_acci_dist = bike_acci_dist %>% as_tibble %>%
+#   gather(key = "사고다발지", value = "거리", 1:134) %>%  #432
+#   mutate(대여소이름 = rep(bike_name,134), #432
+#          거리_m = 거리 * 1000,
+#          .before = "사고다발지",
+#          .keep = "unused")
+# 
+# # 대여소 별 평균이동거리의 Q1 값이 2835m -> 적어도 75%의 대여소에서는 평균적으로 2835m를 이동한다
+# # 대여소와의 거리가 2837m 미만인 대여소 개수 계산
+# # 기존 대여소 데이터와 join
+# bike_place_acci = left_join(bike_place_cafe, bike_acci_dist%>%
+#   filter(거리_m < 2837) %>%
+#   group_by(대여소이름) %>%
+#   summarise(인접사고다발지개수 = n()),
+#   by = "대여소이름") %>% replace_na(list(인접한강공원개수 = 0,
+#                                             인접정류장개수 = 0,
+#                                             인접역개수 = 0,
+#                                             인접대여소개수 = 0,
+#                                             인접사고다발지개수 = 0,
+#                                             인접카페개수 = 0,
+#                                             인접편의점개수 = 0 ))
+
+
+# 사고와 관련된 데이터 더 찾고 위험성과 관련된 파생변수 생성 ㄱㄱ
+# 인접성(접근성)과 관련된 파생변수
+```
+
+-   **대여소와 다른 대여소**
+
+대여소와 대여소 간의 접근성이 높을수록 공공자전거 이용에 긍정적인 영향을 미칠 것으로 생각할 수 있다. 또한 서울시 보행친화기획과의 보도자료에 의하면 대여소 간 평균 거리는 500m로 밝혀졌다. 따라서 대여소 간 거리가 500m 이내라면 대여소 간 접근성이 좋은 것이라고 판단하여 아래와 같은 과정으로 반경 500m 이내의 인접 대여소 개수 변수를 추가하였다.
+
+-   **대여소와 대중교통**
+
+대여소 간의 거리와 마찬가지로 대중교통 정류소와의 거리 또한 공공자전거 이용에 영향을 미칠 수 있다고 생각하였다. 서울열린데이터광장의 '서울시버스정류소좌표데이터(2021.01.14.)' 를 활용하여 대여소와의 거리를 측정하였다. 대여소보다는 약간 더 넓은 반경 1000m를 기준으로 반경 내의 인접 지하철역과 버스정류소의 개수를 변수로 추가하였다.
+
+-   **대여소와 한강 공원**
+
+한강 공원에 주변에 위치한 대여소일수록 총 대여건수가 증가하는 경향을 보였다. 따라서 대여소와 인접한 한강 공원의 개수 또한 공공자전거 이용에 많은 영향을 미치는 요인으로 반경 2000m 내의 한강공원 개수를 변수로 추가하였다.
+
+-   **대여소와 카페**
+
+대여소 간의 거리와 마찬가지로 주변 카페와 같은 다중 이용 시설과의 거리 또한 공공자전거 이용에 영향을 미칠 수 있다고 생각하였다. 카페가 많은 지역일수록 활동인구가 많다고 생각할 수 있고, 활동인구를 대신하기 위해 지표로 카페 수를 고려하였다. 서울열린데이터광장의 '서울특별시 휴게음식점 인허가 정보\` 에서 '업태구분명'이 '커피숍'으로 되어 있는 곳들을 카페로 지정하였다. 사람의 걷는 속도를 시속 4.5km라고 가정하였을 때 도보 5분 내에(475m 이내) 카페가 있다면 대여소의 접근성이 좋은 것이라고 판단하여 반경 475m 이내의 카페 개수를 변수로 추가하였다.
+
+*이동거리와 이용시간 요약 통계량*
+
+<center>
+
+```{r echo=FALSE}
+bike_filtered %>%  group_by(대여소번호) %>% summarise(총이용건수 = sum(count),
+                                            평균이동거리 = mean(distance_moved),
+                                            평균이용시간 = mean(time_used)) %>% summary
+```
+
+</center>
+
+*현재까지의 데이터. 기존 대여소 정보에 행정동별 생활인구, 자전거사고건수, 총이용건수, 인접한 지점 및 시설의 개수 변수가 추가 되었다.*
+
+```{r}
+bike_place_acci %<>% dplyr::select(-인접편의점개수)
+bike_place_acci %>% head() %>% paged_table()
+```
+
+------------------------------------------------------------------------
+
+## **3. 시각화**
+
+다음으로는 앞서 언급했던 최종 데이터셋 `bike`와 `bike_place` 데이터를 다양한 시각화 방법을 통해 데이터를 더 잘 파악하기 위하여 시각화를 진행하였다.
+
+### **1. 대여이력 데이터**
+
+#### **1. 지역구 별 대여소 및 이용률 현황**
+
+```{r echo=FALSE, fig.align='center', fig.height=5, fig.width=8}
+
+bike_place_count = bike_place %>% group_by(GU) %>%
+  summarise(count  = n())
+
+bike_place_count %>% left_join(seoul_map, by = "GU") %>% 
+  ggplot(aes(x=long, y=lat)) +
+  geom_polygon(aes(fill = count, group = group), colour = "black") + 
+  scale_fill_gradient(low = "#CEECF5", high = "#045FB4", space = "Lab", guide = "colourbar") +
+  labs(title = "서울시 공공자전거 대여소 분포 지도",
+       fill = " 대여소 개수") +
+  my_theme + 
+  theme_void() + 
+  theme(plot.title = element_text(hjust = .5, face = "bold", size = 20))
+  
+
+```
+
+위 지도에서 대여소의 불균형이 보이지만 실제 구별 공공자전거 이용량 분포가 대여소 분포와 비슷하다면 수요와 공급이 일치하는 것이기에 큰 문제가 없을 것이다. 그렇다면 대여소가 많은 곳에서는 이용이 활발할까? 아래 대여소 개수와 총 이용건수를 나타낸 두 그래프를 통해 비교해보자.
+
+```{r echo=FALSE, fig.height=8, fig.width=18, fig.align='center'}
+
+
+# 구 별 대여소 개수
+plot1 = bike_place %>%
+  group_by(GU) %>% 
+  summarise(count = n()) %>% 
+  ggplot(aes(x=reorder(GU, count))) +
+  geom_col(aes(y=count, fill=count), width = .7) +
+  scale_fill_gradient(low="#ECF6CE", high="#21610B") +
+  labs(title = "공공자전거 구별 대여소 설치 개수", subtitle = "2021.01.31 기준", y="대여소 개수") +
+  guides(fill = "none") +
+  geom_rect(aes(xmin = 20.5, ymin = -2, xmax = 25.5, ymax = 160), color = "gray23", fill="white", alpha = 0, size = 1.5) + 
+  my_theme + 
+  theme(title = element_text(size = 20),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, face = "bold"))
+    
+plot2 = bike %>% group_by(GU) %>% 
+  summarise(count = n()) %>% 
+  ggplot(aes(x=reorder(GU, count))) +
+  geom_col(aes(y=count, fill = count), width = .7) +
+  scale_fill_gradient(low="#ECF6CE", high="#21610B") +
+  geom_rect(aes(xmin = 20.5, ymin = -1000, xmax = 25.5, ymax = 80000), 
+            color = "gray23", fill="white", alpha = 0, size = 1.5) + 
+  labs(title = "공공자전거 구별 이용건 수",y="이용건수") +
+  guides(fill = "none") +
+  my_theme +
+  theme(title = element_text(size = 20),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, face = "bold"))
+
+grid.arrange(plot1, plot2, nrow = 1)
+
+```
+
+위 그래프에서 대체로 구별 대여소 개수와 이용건수의 분포가 비슷한 경향을 보이나, 강남구와 서초구는 대여소 설치 비율에 비해 이용률이 낮으며, 마포구와 영등포구, 광진구는 대여소 설치 비율에 비해 이용률이 높다. 이를 통해서 대여소의 공급와 공공자전거 이용 수요가 지역구별로 차이가 존재함을 알 수 있다.
+
+#### **2. 이용량 상위 20개 대여소의 특징**
+
+다음은 이용량이 가장 많은 상위 20개의 대여소를 파악해봄으로서 어떠한 특징이 있는지 알아볼 것이다. 따릉이는 서울 전역을 돌아다닐 수 있는 편리한 교통수단인 만큼 한강 공원 주변에도 대여소가 설치되어 있다. 한강공원은 자전거 도로가 잘 구성되어 있으므로 따릉이를 이용하는 사람이 많을 것이라고 가설을 세워보았다. 그렇다면 한강공원 주변의 대여소와 한강공원 주변이 아닌 대여소의 차이가 두드러질까? 아래 그림을 통해 알아보자.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+
+
+bike %>% group_by(대여소번호, 대여소이름, GU, lat, long) %>%
+  summarise(count  = sum(count)) %>% 
+  arrange(desc(count)) %>% head(20) %$%
+  get_googlemap(center = c(mean(long),mean(lat)),
+                zoom = 12,
+                maptype = "roadmap",
+                # color = "bw",
+                size = c(800,800)) %>% 
+  ggmap() +
+  geom_point(data = bike %>% 
+               group_by(대여소번호, 대여소이름, GU, lat, long) %>%
+               summarise(count  = sum(count)) %>%
+               arrange(desc(count)) %>% head(20) ,
+             aes(x=long, y=lat), color = "green1", size = 3, alpha = .8) +
+  geom_point(data = hanriver,
+             aes(x=long, y=lat), color = "#085FC8", size = 3, alpha = .8) + 
+  labs(title = "대여 수 상위 20개 대여소와 한강공원") +
+  my_theme + 
+  theme(axis.title.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank())
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+bike %>% group_by(대여소번호, 대여소이름, GU, lat, long) %>%
+  summarise(count  = sum(count)) %>% 
+  arrange(desc(count)) %>% filter(대여소번호 != 583) %>% ungroup() %>% head(20) %>% dplyr::select("대여소번호" = 대여소번호, "대여소 이름" = 대여소이름, "지역구" = GU, "대여건수" = count)  %>% paged_table
+
+```
+
+위 그림은 서울시에 위치한 10개의 한강공원(파란색)과 상위 20개 대여소(초록색)을 지도에 나타낸 것이며, 위 표는 20개 대여소의 상세정보이다. 영등포구의 대여소가 네 곳으로 가장 많았으며 강서구와 관악구가 각각 세 곳으로 뒤를 이었다. 지도에 표시된 10개의 한강공원 중 상위 20개 대여소와 근접한 곳은 5개에 불과했다. 그렇다면 한강공원과 한강공원에 인접한 대여소의 대여건수 간의 관계는 찾아볼 수 없는 것일까? 이를 알아보기 위해서는 평일과 주말에 따라 대여를 구분할 필요가 있어보인다. 평일에는 주로 출퇴근용으로 따릉이를 이용할 것으로 기대되며, 주말에는 여가의 목적으로 따릉이를 이용할 것이 기대되기 때문이다.
+
+평일과 주말의 따릉이 이용량에는 어떤 차이가 있는지 알아보자.
+
+#### **3. 시간과 요일에 따른 이용량 비교**
+
+주중과 주말을 나누어 이용량 형태를 비교하기 위해서는 대여가 발생한 날짜가 주말인지 평일인지 구분할 필요가 있어보인다. `day` 라는 요일 변수를 기존 데이터에 추가하였다.
+
+```{r include=FALSE}
+#요일 변수 추가
+bike %<>% 
+  mutate(month = lubridate::month(rent_date, label=T, abbr=F), .after = rent_date) %>% 
+  mutate(day = weekdays(rent_date, abbreviate = T))
+```
+
+##### **1. 주중/주말 따릉이 이용 상위 20개 대여소 차이 비교**
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=9, fig.height=4}
+
+
+plot1 = bike %>% 
+  filter(day != "일" & day != "토") %>% 
+  group_by(대여소번호, 대여소이름, GU, lat, long) %>%
+  summarise(count  = sum(count)) %>% 
+  arrange(desc(count)) %>% head(20) %$%
+  get_googlemap(center = c(mean(long),mean(lat)),
+                zoom = 12,
+                maptype = "roadmap",
+                # color = "bw",
+                size = c(800,800)) %>% 
+  ggmap() +
+  geom_point(data = bike %>% 
+               filter(day != "일" & day != "토") %>%
+               group_by(대여소번호, 대여소이름, GU, lat, long) %>%
+               summarise(count  = sum(count)) %>%
+               arrange(desc(count)) %>% head(20) ,
+             aes(x=long, y=lat), color = "green1", size = 3, alpha = .8) +
+  geom_point(data = hanriver,
+             aes(x=long, y=lat), color = "#085FC8", size = 3, alpha = .8) + 
+  labs(title = "평일 대여 수 상위 20개 대여소와 한강공원") +
+  my_theme + 
+  theme(axis.title.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank())
+
+plot2 = bike %>% 
+  filter(day == "일" | day == "토") %>% 
+  group_by(대여소번호, 대여소이름, GU, lat, long) %>%
+  summarise(count  = sum(count)) %>% 
+  arrange(desc(count)) %>% head(20) %$%
+  get_googlemap(center = c(mean(long),mean(lat)),
+                zoom = 12,
+                maptype = "roadmap",
+                # color = "bw",
+                size = c(800,800)) %>% 
+  ggmap() +
+  geom_point(data = bike %>% 
+               filter(day == "일" | day == "토") %>%
+               group_by(대여소번호, 대여소이름, GU, lat, long) %>%
+               summarise(count  = sum(count)) %>%
+               arrange(desc(count)) %>% head(20) ,
+             aes(x=long, y=lat), color = "green1", size = 3, alpha = .8) +
+  geom_point(data = hanriver,
+             aes(x=long, y=lat), color = "#085FC8", size = 3, alpha = .8) + 
+  labs(title = "주말 대여 수 상위 20개 대여소와 한강공원") +
+  my_theme + 
+  theme(axis.title.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank())
+
+grid.arrange(plot1,plot2,nrow=1)
+```
+
+왼쪽 그림은 평일 대여수 상위 20개의 대여소를 나타낸 그림이고 오른쪽 그림은 주말 대여수 상위 20개의 대여소는 나타낸 그림이다. 가장 두드러지는 차이는 왼쪽 그림에서 강서구에 위치한 대여소 세 곳이 오른쪽 그림, 주말 이용량이 높은 대여소를 표시한 그림에서는 보이지 않는다. 오른쪽 그림에 표시된 대여소 주변에는 한강공원, 서울숲 등 나들이로 좋은 장소들이 위치해 있다.
+
+> 평일 이용량 상위 20개 대여소 ⬇
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+bike %>% filter(day != "일" & day != "토") %>%  group_by(대여소번호, 대여소이름, GU, lat, long) %>%
+  summarise(count  = sum(count)) %>% 
+  arrange(desc(count)) %>% filter(대여소번호 != 583) %>% ungroup() %>% head(20) %>% dplyr::select("대여소번호" = 대여소번호, 대여소이름, "지역구" = GU, "대여건수" = count)  %>% paged_table
+```
+
+> 주말 이용량 상위 20개 대여소 ⬇
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+bike %>% filter(day == "일" | day == "토") %>%  group_by(대여소번호, 대여소이름, GU, lat, long) %>%
+  summarise(count  = sum(count)) %>% 
+  arrange(desc(count)) %>% filter(대여소번호 != 583) %>% ungroup() %>% head(20) %>% dplyr::select("대여소번호" = 대여소번호, 대여소이름, "지역구" = GU, "대여건수" = count)  %>% paged_table
+```
+
+##### **2. 주중/주말, 대여권 유형별 이용량**
+
+공공자전거 따릉이는 일일권(회원), 일일권(비회원), 정기권, 단체권 크게 4가지의 대여권이 있다. 주중과 주말을 기준으로 이 대여권 유형별로 이용량의 차이가 있는지를 알아보기 위해 다음과 같이 시각화를 진행하였다.
+
+```{r echo=FALSE,fig.align='center', fig.width=9, fig.height=4}
+
+get_legend<-function(myggplot){
+  tmp <- ggplot_gtable(ggplot_build(myggplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  return(legend)
+}
+
+weekday_type_plot = bike %>%
+  filter(day != "일" & day != "토") %>% 
+  ggplot(aes(x=rent_hour)) +  
+  geom_bar(aes(fill = type), width = .9) +
+  scale_fill_manual(values = c("lavenderblush","lightblue2","lavender","lightblue4")) + 
+  my_theme +
+  labs(title = "평일 따릉이의 대여권 유형별 이용량",
+       x= "시간",
+       fill = "대여권 유형")+
+  theme(title = element_text(size = 15),
+        axis.title.x = element_text(face = "bold", size = 15),
+        axis.title.y = element_blank(),
+        legend.title = element_text(face = "bold"))
+
+
+weekend_type_plot = bike %>%
+  filter(day == "일" | day == "토") %>%
+  ggplot(aes(x=rent_hour)) +  
+  geom_bar(aes(fill = type), width = .9) +
+  scale_fill_manual(values = c("lavenderblush","lightblue2","lavender","lightblue4")) + 
+  my_theme +
+  labs(title = "주말 따릉이의 대여권 유형별 이용량",
+       x= "시간")+
+  theme(title = element_text(size = 15),
+        axis.title.x = element_text(face = "bold", size = 15),
+        axis.title.y = element_blank(),
+        legend.position = "none")
+
+
+
+legend1 = get_legend(weekday_type_plot)
+
+weekday_type_plot = weekday_type_plot + theme(legend.position = "none")
+
+grid.arrange(weekday_type_plot, weekend_type_plot, legend1, 
+             ncol = 3,
+             widths = c(3,3,.8))
+
+remove(weekend_type_plot)
+remove(weekday_type_plot)
+```
+
+우선 가장 두드러지는 두 그림의 차이는 전체적인 분포이다. 두 그래프에서 y축은 모두 이용건수의 합을 의미하는데 왼쪽 평일 따릉이 이용량 그래프에서는 8시와 18시, 19시에 이용량이 급증하는 것을 알 수 있다. 평일 이 시간대에는 출퇴근 시간으로 따릉이를 이용하는 이용자가 많을 것임을 짐작할 수 있다. 반면 오른쪽 주말 이용량 그래프에서는 5시 이후 이용량이 점차 증가하면서 16시와 17시 경 이용량이 가장 많으며 그 주위로 대칭적인 모양을 띄는 것을 확인할 수 있다. 그렇다면 평일에는 출퇴근 수단으로, 주말에는 여가 수단으로 따릉이를 이용하는 사람들이 많을 것이라고 가정할 수 있다.
+
+또한 총 네 가지 색으로 구분된 '대여권 유형'에서도 비슷한 생각을 할 수 있다. 평일에 비해 주말은 평일에 비해 시간당 일일권 이용자수가 많다. 이는 주말에는 따릉이를 하루를 즐기기 위한 여가 수단으로 이용하는 것이라고 생각할 수 있으며, 정기권 이용자가 비교적 더 많은 평일에는 규칙적으로 출퇴근 시에 따릉이를 이용하는 이용자가 더 많다고 생각할 수 있다.
+
+##### **3. 주중/주말 시간별 평균 이동거리 비교**
+
+이를 확인하기 위해 주말과 평일 따릉이의 이동거리와 이용시간을 비교해보려고 한다. 그 이유는 '퍼스트-라스트 마일'로 설명할 수 있다. '퍼스트-라스트 마일'이란 대중교통 이용 전후의 거리를 의미한다. '퍼스트 마일'은 출근길 거주지에서 대중교통을 이용하기 위해 이동해야 하는 거리이며, '라스트 마일'은 퇴근길 대중교통 이용 후 거주지까지 가기 위해 이동해야 하는 거리이다. 만약 주말보다 평일의 시간당 평균 이동거리와 이용시간이 짧다면 '퍼스트-라스트 마일'을 움직이기 위해 따릉이를 이용하는 사람이 많다고 생각할 수 있을 것이다.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+bike_vel = bike %>% 
+  filter(time_used != 0 & distance_moved != 0) %>% 
+  mutate(vel = (distance_moved / 1000) / (time_used / 60)) %>% 
+  filter(vel <= 23)
+```
+
+시각화를 진행하기에 앞서 다음과 같은 코드를 통해 속도 변수인 `vel` 을 만들었다. 따릉이에 내장된 GPS 기기 자체의 오류로 이용시간이나 이동거리가 제대로 기록되지 않는 경우가 있어, 이용시간과 이동거리가 제대로 기록되었다고 할 수 있는 것들을 추출하기 위해 `vel` 변수를 만들었다. 이용시간이 존재하지 않거나, 이동거리가 0인 것들은 분석에 도움이 되지 않으며, 이동속도가 비정상적으로 큰 대여 건 또한 데이터에 이상치를 제공해주기에 이용건 별 속도가 25km/h 이하인 것들만 아래 코드를 통해 남겼다.
+
+``` {.r}
+bike_vel = bike %>% 
+  filter(time_used != 0 & distance_moved != 0) %>% 
+  mutate(vel = (distance_moved / 1000) / (time_used / 60)) %>% 
+  filter(vel <= 25 )
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=9, fig.height=4}
+
+bike_vel %>% dplyr::select(rent_hour, distance_moved, day) %>% 
+  mutate( weekend = ifelse( day != "일" & day != "토", "평일", "주말"),
+          weekend = factor(weekend, levels = c("평일","주말"))) %>% 
+  group_by(rent_hour, weekend) %>% 
+  summarise(avg_distance = mean(distance_moved)) %>% 
+  ggplot(aes(x=rent_hour, y=avg_distance)) + 
+  geom_col(aes(fill = avg_distance)) + 
+  scale_fill_gradient(low = "#CEECF5", high = "#045FB4", space = "Lab", guide = "colourbar") +
+  labs(title = "주중/주말에 따른 평균 이동거리 분포",
+       y = "평균 이동 거리(m)",
+       fill = " 평균 이동 거리(m)") +
+  my_theme + 
+  facet_wrap(~weekend, ncol = 2) +
+  theme(legend.position = "bottom") + 
+  theme(plot.title = element_text(hjust = .5, face = "bold", size = 15))
+  
+
+```
+
+위 그림은 평일과 주말 공공자전거의 평균 이동거리를 시간에 따라서 나타낸 것이다. 시간에 따른 평균 이동거리가 확연히 차이나는 것을 볼 수 있다. 주말의 경우에는 앞서 살펴보았던 시간에 따른 이용량에서 가장 많은 이용량이 발생했던 시간인 16시 경에 평균 이동거리가 긴 것을 확인할 수 있다. 평일은 주말에 비해 자전거 이용자들의 평균 이동거리가 짧으며 특히나 출근 시간인 8시 경에는 평균적으로 가장 짧게 이동하는 것을 보였다. 이를 통해 장거리를 이동하기 보다는 출퇴근 시 '퍼스트-라스트 마일'을 이동하기 위해 자전거를 이용한다는 것을 확인할 수 있었다.
+
+그렇다면 공공자전거를 이용하는 연령 분포에는 차이가 있을까? 다음을 통해 알아보자
+
+##### **4. 주중/주말, 연령별 이용량**
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=9, fig.height=4}
+
+
+weekday_age_plot = bike %>%
+  filter(day != "일" & day != "토") %>%
+  group_by(rent_hour, age) %>% 
+  summarise(count = n()) %>% 
+  mutate(age = as.character(age)) %>% 
+  ggplot(aes(x=rent_hour, y=count, color = age)) +  
+  geom_line(size = 1) +
+  my_theme + 
+  labs(title = "평일 따릉이의 연령별 이용량",
+       x= "시간")+
+  scale_fill_discrete(name = "연령대") + 
+  theme(title = element_text(size = 15),
+        axis.title.x = element_text(face = "bold", size = 12),
+        axis.title.y = element_blank(),
+        legend.title = element_blank())
+
+
+weekend_age_plot = bike %>%
+  filter(day == "일" | day == "토") %>% 
+  group_by(rent_hour, age) %>% 
+  summarise(count = n()) %>% 
+  mutate(age = as.character(age)) %>% 
+  ggplot(aes(x=rent_hour, y=count, color = age)) +  
+  geom_line(size = 1) +
+  my_theme + 
+  labs(title = "주말 따릉이의 연령별 이용량",
+       x= "시간")+
+  theme(title = element_text(size = 15),
+        axis.title.x = element_text(face = "bold", size = 12),
+        axis.title.y = element_blank(),
+        legend.title = element_blank()) + 
+  theme(legend.position = "none")
+
+legend2 = get_legend(weekday_age_plot)
+weekday_age_plot = weekday_age_plot + theme(legend.position = "none")
+
+grid.arrange(weekday_age_plot, weekend_age_plot, legend2, 
+             ncol = 3,
+             widths = c(3,3,.5))
+
+remove(weekend_age_plot)
+remove(weekday_age_plot)
+```
+
+위 그래프는 평일과 주말을 구분하여 연령대별 따릉이 이용량을 나타낸 그래프이다. 20대와 30대, 40대, 50대는 이용량의 차이만 있을 뿐 전반적인 형태가 비슷하며 60대와 70대이상 이용자는 전체에서 큰 비중을 차지하지 못하는 듯 보인다.
+
+### **2. 교통사고 데이터**
+
+#### **1. 지역구별 사고분포**
+
+```{r echo=FALSE, fig.align='center', fig.height=4, fig.width=8, message=FALSE, warning=FALSE}
+# 지역구별 사고분포 박스플랏
+accidentInfo %>% rename(GU = "시군구명") %>%  group_by(month, GU) %>% 
+  summarise(count=n()) %>% 
+  spread(key = GU, value = count) %>% 
+  mutate_all(~replace(., is.na(.), 0)) %>% 
+  gather(key = "GU", value = "count", -1) %>% ungroup %>% 
+  group_by(GU) %>% mutate(mean_count = mean(count)) %>% 
+  ggplot() + 
+  geom_boxplot(aes(x=GU, y= count, color = mean_count, fill = mean_count), alpha = 0.5) +
+  # 
+  # #최대 사고 건수와 월 점 찍기
+  # geom_point(data = acci_min, aes(x=GU, y=count), color = "navy", size = 2)+
+  # geom_label(data = acci_min, aes(x=GU, y=count, label = month), lable.size = NA)+
+  # 
+  # #최대 사고 건수와 월 점 찍기
+  # geom_point(data= acci_max, aes(x=GU, y=count), color = "darkred", size = 2) + 
+  # geom_label(data = acci_max, aes(x=GU, y=count, label = month))+
+  # geom_abline(slope = 0, intercept = 0, linetype = "dashed") + 
+  # 
+  labs(title = "자전거 사고 건수 분포(월별)",
+       x = "지역구",
+       y = "사고 건수") + 
+  scale_x_discrete(expand=c(-1, 0)) + 
+  theme_minimal() + 
+  theme(axis.text.x = element_text(vjust = 1, hjust = 1, angle = 45, size = 10),
+        axis.title.x = element_blank(),
+        plot.title = element_text(face = "bold", size = 20, hjust=.5),
+        axis.title = element_text(face = "bold", size = 15, color = "dimgrey"),
+  ) + 
+  scale_color_continuous(low = "royalblue1", high = "firebrick1")+
+  scale_fill_continuous(low = "royalblue1", high = "firebrick1")+
+  
+  guides(color = "none",
+         fill = "none")
+    
+```
+
+우선 자전거 사고의 지역구별 분포를 알아보았다. 송파구와 영등포구가 다른 구들에 비하여 유독 높게 나타났으며 이 두 곳을 제외한 곳에서는 평균적으로 연간 10건 안팎의 자전거 사고가 일어났음을 알 수 있었다. 하지만 위 같은 차이는 단순히 사고 위험이 높은 곳이라고 이해하기보다 해당 지역구의 활동인구와 연관지어서 보아야 할 것이다. 활동인구가 많다면 그만큼 잠재적 사고 대상자가 많다고 볼 수 있기 때문이다.
+
+#### **2. 지역구별 자전거 사고 발생건수와 총 생활인구수**
+
+```{r message=FALSE, warning=FALSE}
+bike_place_acci = bike_place_acci %>% mutate(id = 행정동코드 %/% 1000)
+
+#지역구별 총생활인구수 시각화하자
+plot_pop_gu = qmap(location = "Seoul", zoom = 11, source = "stamen", maptype="toner-lite") +
+  geom_polygon(data = left_join(bike_place_acci %>% group_by(id) %>% summarise(총생활인구수 = sum(평균생활인구수)), 
+                           seoul_map, by = "id"),
+               aes(x=long, y=lat, group=group, fill=(총생활인구수)/10), color = "grey") + 
+  scale_fill_continuous(low = "white", high = "#F656EB") + 
+  geom_text(data = left_join(bike_place_acci %>% group_by(id) %>% summarise(총생활인구수 = sum(평균생활인구수)), 
+                           seoul_map, by = "id") %>% 
+               group_by(GU) %>%
+               summarise(long = mean(long), lat = mean(lat), 총생활인구수 = mean(총생활인구수)/10),
+            aes(x=long, y=lat, label = GU, color = 총생활인구수))+
+  scale_color_continuous(low = "grey50", high =  "black") +
+  labs(title = "지역구 별 총 생활인구수")+
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 15, hjust = .5)
+  )  
+  
+acci_seoul_map = accidentInfo %>% group_by(id) %>% 
+  summarise(count = n()) %>% 
+  left_join(seoul_map, by = c("id"))
+
+
+plot_acci_gu = qmap(location = "Seoul", zoom = 11, source = "stamen", maptype="toner-lite") +
+  geom_polygon(data = acci_seoul_map, aes(x=long, y=lat, group=group, fill = count), 
+               color = "grey") +
+  geom_text(data = acci_seoul_map %>%
+               group_by(GU) %>%
+               summarise(long = mean(long), lat = mean(lat), count = count) %>%
+               distinct(GU, .keep_all = T) %>%
+               # 총 발생 건수가 200건
+               mutate(large = ifelse(count > 200, 1, 0)) ,
+            aes(x=long, y=lat, label = GU, color = large))+
+  scale_color_continuous(low = "grey50", high =  "black") +
+  scale_fill_continuous(low = "white", high = "#40FF00") + 
+  labs(fill = "발생 건수", title = "지역구 별 자전거 사고 발생 건수")+
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 15, hjust = .5)
+  ) + 
+  guides(color = FALSE)
+
+
+grid.arrange(plot_acci_gu,plot_pop_gu, nrow=1)
+
+remove(plot_pop_gu)
+remove(plot_acci_gu)
+
+```
+
+연간 총 자전거 사고 건수와 총 생활인구수를 지도로 나타내었다. 색이 진할수록 사고 건수와 생활인구수가 많음을 의미한다. 전반적으로 비슷한 경향성을 보이나 생활인구가 많은 강서구와 강남구, 서초구는 생활인구 대비 자전거 사고가 많이 발생하지는 않은 것으로 보인다. 그에 반해 송파구와 영등포구는 생활인구와 자전거 사고 건수가 비슷한 경향을 나타내는 것으로 보인다.
+
+```{r echo=FALSE, fig.align='center', fig.height=4, fig.width=8, message=FALSE, warning=FALSE}
+
+               
+ #송파구
+plot_songpa = qmap("songpa station", zoom = 13, source = "stamen", maptype="terrain-lines") + 
+  #자전거도로
+  geom_polygon(data = bike_road, 
+               aes(x=long, y=lat, group = group), color = "gold2",fill = "white", alpha = 0 ) +
+  #사고다발지
+  geom_point(data = accident %>% filter(GU == "송파구"), 
+             aes(x=long, y=lat, alpha = occrrnc_cnt),
+             color = "red", size = 5) +
+  scale_alpha_continuous(range = c(.3,.9)) + 
+  geom_label(data = accident %>% filter(GU == "송파구") %>% summarise(long = mean(long), lat = mean(lat)),
+             aes(x=long-0.03, lat+0.025),
+             label = "송파구",
+             size = 7) + 
+  #따릉이대여소
+  geom_point(data = bike_place %>% filter(GU == "송파구"), 
+             aes(x=long, y=lat), color = "chartreuse3", color = "gray1") + 
+  #외곽선
+  geom_polygon(data = seoul_map %>% filter(GU == "송파구"),
+               aes(x=long,y=lat,group=group),
+               fill="white", alpha =0, color = "black", size = 1)+
+  theme(
+    legend.position = "none"
+  )
+  
+#영등포 
+plot_youngdeonpo = qmap("youngdeongpogu", zoom = 13, source = "stamen", maptype="terrain-lines") + 
+  #자전거도로
+  geom_polygon(data = bike_road, 
+               aes(x=long, y=lat, group = group), color = "gold2",fill = "white", alpha = 0 ) +
+  #사고다발지
+  geom_point(data = accident %>% filter(GU == "영등포구"), 
+             aes(x=long, y=lat, alpha = occrrnc_cnt),
+             color = "red", size = 5) +
+  scale_alpha_continuous(range = c(.3, .9)) + 
+  geom_label(data = accident %>% filter(GU == "영등포구") %>% summarise(long = mean(long), lat = mean(lat)),
+             aes(x=long-0.045, lat+0.040),
+             label = "영등포구",
+             size = 7) + 
+  #따릉이대여소
+  geom_point(data = bike_place %>% filter(GU == "영등포구"), 
+             aes(x=long, y=lat), color = "chartreuse3", color = "gray1") + 
+  #외곽선
+  geom_polygon(data = seoul_map %>% filter(GU == "영등포구"),
+               aes(x=long,y=lat,group=group),
+               fill="white", alpha =0, color = "black", size = 1) +
+  theme(
+    legend.position = "none"
+  )
+grid.arrange(plot_youngdeonpo, plot_songpa, nrow =1)  
+remove(plot_songpa)
+remove(plot_youngdeonpo)
+```
+
+사고 건수가 가장 많았던 두 지역구를 좀 더 자세히 나타내보았다. 빨간색 원은 자전거 사고 다발지이며, 노란색은 자전거 도로, 초록색은 공공자전거 따릉이 대여소를 나타낸다. 두 지역 모두 교차로 근방에서 사고가 발생한 것을 알 수 있다. 영등포구는 공공자전거 대여소와 자전거 도로가 주변에 드문 곳에 나타나는 반면 송파구는 대여소와 자전거 도로 모두 있는 곳에서 자전거 사고가 다발한 것으로 나타난다.
+
+| 지도를 통해 교차로에 사고가 많이 발생했음을 확인할 수 있었고, 교차로가 많은 곳에서는 사고가 발생할 확률이 높을 것이라는 가설 하에 서울시 교차로 데이터를 수집하였고, 이를 행정동별로 개수를 세어 기존 대여소 데이터의 추가하였다.
+
+#### **3. 생활인구대비 지역구별 자전거 사고 발생률**
+
+```{r fig.height=6, fig.width=8}
+
+
+total = accidentInfo %>% 
+  rename(GU = "시군구명") %>%
+  group_by(month, GU) %>% 
+  summarise(count=n()) %>% 
+  spread(key = GU, value = count) %>% 
+  mutate_all(~replace(., is.na(.), 0)) %>% 
+  gather(key = "GU", value = "count", -1) %>% ungroup %>% 
+  left_join(pop_gu %>% rename(GU = "시군구명")) %>% 
+  group_by(month) %>% 
+  summarise(total_pop_gu = sum(평균생활인구수),
+            total_acci = sum(count)) %>% 
+  mutate(total_prop = total_acci / total_pop_gu * 10^6)
+
+
+accidentInfo %>% rename(GU = "시군구명") %>%
+  group_by(month, GU) %>% 
+  summarise(count=n()) %>% 
+  spread(key = GU, value = count) %>% 
+  mutate_all(~replace(., is.na(.), 0)) %>% 
+  gather(key = "GU", value = "count", -1) %>% ungroup %>% 
+  left_join(pop_gu, by = c("month" = "month","GU"= "시군구명")) %>% 
+  left_join(total, key = "month") %>% dplyr::select(-total_pop_gu, -total_acci) %>% 
+  mutate(acci_prop = count/평균생활인구수 * 10^6,
+         above_avg = ifelse(acci_prop >= total_prop, 1, 0) %>% as.factor) %>% 
+  # group_by(id,GU) %>% 
+  # mutate(above_avg = ifelse(acci_prop >= median(acci_prop), 1, 0 ) %>% as.factor) %>% 
+  ggplot() + 
+  geom_col(aes(x=month, y = acci_prop, fill = above_avg), width = .8, alpha = .8) + 
+  scale_x_continuous(breaks = c(1:12),
+                       labels = c("1", "2", "3", "4", "5", "6", 
+                                  "7", "8", "9", "10", "11", "12")) + 
+  scale_fill_manual(values = c("grey70", "firebrick"),labels = c("서울시 전체 평균보다 낮음", "서울시 전체 평균보다 높음")) +
+  labs(title = "생활인구 대비 자전거 사고 월별 발생률",
+       y = "사고 발생률",
+       x = "월") + 
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.title = element_text(face = "bold", hjust = .5, size = 15),
+    axis.title = element_text(face = "bold", size = 12),
+    legend.position = "bottom",
+    legend.title = element_blank()
+  ) + 
+  facet_wrap(GU~., nrow = 5)
+
+remove(total)
+```
+
+위 지도에서 생활인구 분포와 자전거 사고 건수 분포가 지역별로 비슷한 양상을 띄는 것을 보였다. 이를 다른 방법으로 확인하기 위해 위와 같이 총 25개 지역구의 사고 건수를 각 지역구의 생활인구로 나누어 생활인구대비 사고율을 월별로 나타내었다. 그래프의 막대가 빨갛다면 해당 월의 사고율이 해당 월 서울시의 평균 사고율보다 높다는 것을 의미한다. 송파구와 영등포구는 모든 월이 색칠되며 전반적으로 평균 사고율을 웃도는 모습을 보였으며, 추가적으로 동대문구, 노원구 등 또한 생활인구수 대비, 서울시 평균 대비 사고율이 높음을 알 수 있는 등의의 단순 사고 건수로만은 알 수 없었던 정보들을 알 수 있었다.
+
+#### **4. 계절 별 최대/최소 자전거 사고 건수 분포**
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+ 
+### 사고 건수가 최소인 월과 그때의 사고 건수
+acci_min = accidentInfo %>%
+  rename(GU = "시군구명") %>% 
+  group_by(month, GU) %>% 
+  summarise(count=n()) %>% ungroup %>% 
+  group_by(GU) %>% 
+  filter(count == min(count)) %>% 
+  distinct(GU, .keep_all = T) %>%  distinct(GU, .keep_all = T) %>% 
+  mutate(season = ifelse(month %in% c(12,1,2), "겨울", 
+                         ifelse(month %in% c(3,4,5), "봄",
+                                ifelse(month %in% c(6,7,8), "여름", "가을"))),
+         .after = "month") %>% 
+  rename(month_min_acci=month, min_count=count)
+
+
+
+# 사고 건수 최소인 계절 분포  
+season_color = c("봄"="#FFF1A6", "여름"="#15B2D3", "가을" ="#D45B12", "겨울" = "grey77")
+plot_acci_min = acci_min %>% 
+  group_by(season) %>% 
+  summarise(count = n()) %>%
+  mutate(prop = count / sum(count) ) %>% 
+  arrange(desc(count)) %>% 
+  ggplot(aes(x="", y=count, fill = factor(season))) + 
+  geom_bar(width = 1, stat = "identity", alpha = 0.8) +
+  geom_text(aes(label = paste0(round(prop*100, digits = 1),"%")), 
+             position = position_stack(vjust = .5), color = "black") +
+  scale_fill_manual(values = season_color) + 
+  theme_classic() +
+  theme(plot.title = element_text(hjust=0.5, face = "bold", size = 20),
+        legend.title = element_text(face = "bold"),
+        axis.line = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank()) +
+  labs(fill = "계절",
+       x = NULL,
+       y = NULL,
+       title = "사고 건수 최소 계절 분포") + 
+  coord_polar("y")
+  # coord_polar("y", start = 0) + 
+  # theme_void()
+
+# 사고 건수가 최대인 월과 그때의 사고 건수
+acci_max = accidentInfo %>%
+  rename(GU = "시군구명")%>%
+  group_by(month, GU) %>% 
+  summarise(count=n()) %>% ungroup %>% 
+  group_by(GU) %>% 
+  filter(count == max(count)) %>% 
+  distinct(GU, .keep_all = T) %>% distinct(GU, .keep_all = T) %>% 
+  mutate(season = ifelse(month %in% c(12,1,2), "겨울", 
+                         ifelse(month %in% c(3,4,5), "봄",
+                                ifelse(month %in% c(6,7,8), "여름", "가을"))),
+         .after = "month") %>% 
+  rename(month_max_acci=month, max_count=count)
+
+
+
+# 사고 건수 최대인 계절 분포
+plot_acci_max = acci_max %>% 
+  group_by(season) %>% 
+  summarise(count = n()) %>%
+  mutate(prop = count / sum(count) ) %>% 
+  arrange(desc(count)) %>% 
+  ggplot(aes(x="", y=count, fill = factor(season))) + 
+  geom_bar(width = 1, stat = "identity", alpha = 0.7) +
+  geom_text(aes(label = paste0(round(prop*100, digits = 1),"%")), 
+             position = position_stack(vjust = .5), color = "black") +
+  scale_fill_manual(values = season_color) + 
+  theme_classic() +
+  theme(plot.title = element_text(hjust=0.5, face = "bold", size = 20),
+        legend.title = element_text(face = "bold"),
+        axis.line = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank()) +
+  labs(fill = "계절",
+       x = NULL,
+       y = NULL,
+       title = "사고 건수 최대 계절 분포") + 
+  coord_polar("y")
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+grid.arrange(plot_acci_max, plot_acci_min, nrow=1)
+remove(plot_acci_max)
+remove(plot_acci_min)
+```
+
+지역구별로 사고 건수가 최대일 때의 계절과 최소일 때의 계절을 파이 그래프를 통해 나타내었다. 92%의 지역구가 겨울에 사고가 가장 적게 발생했으며 겨울에 비해 따뜻한 나머지 3개의 계절에 최대로 발생한 것으로 나타났다.
+
+#### **5. 주중 주말 평균 사고 건수**
+
+```{r}
+
+#주말 시간별 사고 건수
+acci_weekday_plot = accidentInfo %>%
+  rename(GU = "시군구명") %>% 
+  mutate(weekend = ifelse(day =="토" | day == "일", "주말", "주중")) %>%
+  filter(weekend == "주말") %>% group_by(hour, weekend) %>%
+  summarise(avg_count=n()/2) %>% 
+  ggplot(aes(x=hour, y=avg_count)) +
+  geom_line(color = "lightpink1", size = 1) + 
+  labs( title = "주말 평균" ) +  
+  theme_minimal()+
+  theme(
+    axis.title = element_blank(),
+    title = element_text(face = "italic", size = 10),
+    axis.line = element_line(colour = "grey50", size = 1, lineend = "square")
+  )
+
+#주중 시간별 사고 건수
+acci_weekend_plot = accidentInfo %>%
+  mutate(weekend = ifelse(day =="토" | day == "일", "주말", "주중")) %>%
+  filter(weekend == "주중") %>% group_by(hour, weekend) %>%
+  summarise(avg_count=n()/5) %>% 
+  ggplot(aes(x=hour, y=avg_count)) +
+  geom_line(color = "lightgoldenrod2", size = 1) + 
+  labs( title = "주중 평균" ) + 
+  theme_minimal()+
+  theme(
+    axis.title = element_blank(),
+    title = element_text(face = "italic", size = 10),
+    axis.line = element_line(colour = "grey50", size = 1, lineend = "square")
+  )
+
+main=textGrob("시간대별 평균 사고 건수 분포",gp=gpar(fontsize=25,font=2))
+x_lab=textGrob("시간",gp=gpar(fontsize=15,font=1))
+y_lab=textGrob("평균 사고 건수",gp=gpar(fontsize=15,font=1), rot = 90)
+grid.arrange(acci_weekday_plot, acci_weekend_plot, nrow=1, top=main, bottom=x_lab, left = y_lab)
+remove(acci_weekday_plot)
+remove(acci_weekend_plot)
+```
+
+다음으로는 주중과 주말 간 사고 건수의 차이가 있는지 알아보기 위하여 위와 같이 나타내었다. 주중은 주말에 비해 출근 시간대에 사고가 많이 일어나는 것으로 나타났으며 앞서 나타냈던 시간에 따른 공공자전거 이용량과 매우 비슷한 형태를 나타낸다. 평균적으로 발생하는 사고 건수에서는 주중과 주말에 차이는 뚜렷하지 않은 것으로 보인다.
+
+#### **6. 연령대와 성별에 따른 자전거 사고 건수**
+
+```{r fig.height=4, fig.width=7}
+plot_acci_a = accidentInfo %>%
+  mutate(가해 = ifelse(가해==1, "가해", "피해")) %>% 
+  filter(가해 == "가해") %>% 
+  group_by(가해운전자연령, `가해운전자 성별`) %>% 
+  summarise(count=n()) %>% 
+  filter(가해운전자연령 != "불명") %>% 
+  arrange(desc(count)) %>% 
+  ggplot() +
+  geom_col(aes(x=가해운전자연령, y=count, fill = `가해운전자 성별`), position = "dodge") + 
+  scale_x_discrete(labels = c("10대미만", "10대", "20대", "30대", "40대", "50대", "60대", "70대이상")
+) + 
+  theme_minimal()+
+  labs(title = "자전거 사고(가해자) 연령별 분포",
+       y = "사고건수")+
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face= "bold", size = 15),
+    axis.title = element_text(face = "bold", size = 10)
+  )
+
+plot_acci_p = accidentInfo %>% 
+  filter(가해 == 0) %>% 
+  group_by(피해운전자연령, `피해운전자 성별`) %>% 
+  summarise(count = n()) %>% 
+  filter(피해운전자연령 != "불명") %>% 
+  arrange(desc(count))%>% 
+  ggplot() +
+  geom_col(aes(x=피해운전자연령, y=count, fill = `피해운전자 성별`), position = "dodge") + 
+  scale_x_discrete(labels = c("10대미만", "10대", "20대", "30대", "40대", "50대", "60대", "70대이상")
+)+ 
+  theme_minimal()+
+  labs(title = "자전거 사고(피해자) 연령별 분포",
+       y = "사고건수",
+       fill = "성별")+
+  theme(
+    plot.title = element_text(face= "bold", size = 15),
+    axis.title = element_text(face = "bold", size = 10)
+  )
+
+grid.arrange(plot_acci_a, plot_acci_p, nrow = 1,
+             widths = c(.87, 1))
+remove(plot_acci_a)
+remove(plot_acci_p)
+```
+
+연령대와 성별 모두 자전거 사고와 관련하여 큰 차이를 보였다. 피해와 가해의 경우 모두 여성보다는 남성이 사고의 당사자였으며, 청소년인 10대와 50대이상의 중장년층이 두드러지게 높았다. 이를 토대로 각 연령별로 자전거 사고에 미치는 기여도가 다르다고 판단하여 기존 데이터에 존재하던 하나의 변수인 '행정동별 총생활인구수'를 각각 '어린이', '청소년', '청년', '중장년층'의 네가지 범주로 나누어 변수를 재정의하기로 하였다. 이때 각 연령대별 사고율(가해와 피해 비율 평균)을 아래와 같은 가중치로 하여 '어린이'의 경우는 10세미만, '청소년'의 경우 '10대', '청년'의 경우 '20대'에서'40대', 그리고 마지막으로 나머지는 '중장년층'으로 범주화하였다. 이같이 총생활인구를 연령대와 성별로 구분한다면 변수 간 높은 상관관계가 예상된다. 이는 변수 선택을 통해 처리할 것이다.
+
+```{r message=FALSE, warning=FALSE}
+
+# 자전거 사고 가해자 연령대와 성별
+가해비율 = accidentInfo %>% 
+  filter(가해 == 1) %>% 
+  group_by(가해운전자연령, `가해운전자 성별`) %>% 
+  summarise(count=n()) %>%
+  ungroup %>% 
+  filter(가해운전자연령 != "불명") %>% 
+  mutate(나이구분 = ifelse(extract_numeric(가해운전자연령) < 10 , "어린이",
+                ifelse(extract_numeric(가해운전자연령) < 20, "청소년",
+                       ifelse(extract_numeric(가해운전자연령) < 50, "청년", "중장년"))),
+             비율 = count/sum(count)) %>% arrange(`가해운전자 성별`) %>% dplyr::select(비율)
+
+# 자전거 사고 피해자 연령대와 성별  
+피해비율 = accidentInfo %>% 
+  filter(가해 == 0) %>% 
+  group_by(피해운전자연령, `피해운전자 성별`) %>% 
+  summarise(count=n()) %>%
+  ungroup %>% 
+  filter(피해운전자연령 != "불명") %>% 
+  mutate(나이구분 = ifelse(extract_numeric(피해운전자연령) < 10 , "어린이",
+                ifelse(extract_numeric(피해운전자연령) < 20, "청소년",
+                       ifelse(extract_numeric(피해운전자연령) < 50, "청년", "중장년"))),
+             비율 = count/sum(count)) %>% arrange(`피해운전자 성별`) %>% dplyr::select(비율)
+
+
+비율 = apply(cbind(가해비율, 피해비율),1,mean)
+이름 = accidentInfo %>% 
+  filter(가해 == 0) %>% 
+  group_by(피해운전자연령, `피해운전자 성별`) %>% 
+  summarise(count=n()) %>%   filter(피해운전자연령 != "불명") %>%  dplyr::select(-count) %>% 
+  rename(연령 = "피해운전자연령",
+         성별 = "피해운전자 성별")%>% arrange(`성별`)
+
+```
+
+*각 연령대별 인구에 부여한 가중치*
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# 사고(가해, 피해 총합) 비율
+cbind(이름,"비율" = 비율) %>% mutate(`비율(%)` = round(비율*100, digits = 2), .keep = "unused") %>% paged_table() 
+```
+
+*각 연령대별 인구에 부여한 가중치 예시* 
+
+$$
+ 남자청년생활인구  =  1.0788 * 남자20대생활인구 +  1.068 *남자30대생활인구 + 1.088 * 남자20대생활인구
+$$
+
+------------------------------------------------------------------------
+
+## **4. 최종 데이터셋**
+
+앞서 전처리한 모든 데이터는 대여이력과 연관성이 깊다고 생각되는 중요한 변수들을 포함하고 있다. 그렇기에 아래와 같이 공공자전거 대여에 영향을 미칠 수 있는 요인들을 한 데이터셋으로 만들었다. 총 2051개의 관측치(대여소 개수)와 27개의 변수로 구성되어 있다.
+
+*최종 데이터셋*
+
+```{r}
+
+crossroad_cnt = crossroad %>% group_by(행정동코드) %>% 
+  summarise(교차로개수 = n())
+bike_place_acci = left_join(bike_place_acci,crossroad_cnt, by="행정동코드")
+
+pop_w = fread("final_dataset/pop_w.csv")
+bike_place_final = left_join(bike_place_acci, pop_w, by="행정동코드") %>% mutate(id = 행정동코드 %/% 1000)
+bike_place_final %>% head(10) %>%  paged_table()
+
+```
+
+------------------------------------------------------------------------
+
+```{r}
+# danger_var = left_join(bike_place_final %>% dplyr::select(행정동코드, 행정동명, 총사고건수, contains("어린이"), contains("년"), contains("교차로")),
+#           accident %>% group_by(행정동코드) %>%
+#             summarise(사고다발지개수 = n(),
+#                       사고다발지내사고건수 = sum(occrrnc_cnt)),
+#           by = "행정동코드") %>%
+#   replace_na(list(사고다발지개수 = 0,
+#                          사고다발지내사고건수 = 0)) %>%
+#   distinct(행정동코드, .keep_all = T)
+# 
+# danger_var  = left_join(danger_var, road %>% dplyr::select(-행정동명) %>% mutate(행정동코드 = 행정동코드 %/% 10), by = "행정동코드")
+# danger_var
+# 
+# write.csv(danger_road, "final_dataset/danger_road.csv", row.names = F)
+# 
+rm(list=ls())
+```
+
+```{r}
+bike_place_final = fread("final_dataset/bike_place_final.csv")
+seoul_id = fread("final_dataset/seoul_id.csv")
+road = fread("final_dataset/road_full.csv")
+danger_road = fread("final_dataset/danger_road.csv")
+access = fread("final_dataset/access.csv") %>%  dplyr::select(-평균생활인구수, -인접사고다발지개수)
+seoul_emd_map = fread("final_dataset/seoul_emd_map.csv") %>% mutate(id = id%/%100000)
+bike_road = fread("final_dataset/bike_road.csv") # 자전거도로
+```
+
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+
+# **변수 선택**
+
+최종 대여소 데이터 내에는 다음과 같이 크게 세 가지의 정보가 존재한다.
+
+-   대여소 고유 정보 : 대여소 번호, 대여소 이름, 대여소의 위경도 좌표,
+
+-   자전거 교통사고와 관련된 위험도 정보 (행정동 기준) : 생활 인구, 총 교통사고 건수, 자전거 사고 다발지, 교차로 개수, 도로종류별개수
+
+-   대여소 주변 접근성에 관련된 정보 (대여소 중심 기준) : 이용건수, 인접 지점 및 시설의 개수
+
+이 중 아래 두 개인 위험도 정보와 접근성 정보 각각에 대해 적절한 통계적 방법을 통하여 후술할 클러스터링을 위한 변수 검정을 실시하고자 한다.
+
+### **1. 행정동별 자전거 사고 위험도**
+
+<p>
+
+우선 행정동별 위험도 지표이다. 최소 한 개의 대여소가 존재하는 406개의 행정동에 관하여 자전거 사고 위험 정도에 관한 분석을 진행하였다. 사고 건수를 종속 변수로 갖는 모델을 설정하여 사고 건수와 연관이 깊은 변수들만 남기고자 한다. 이때, 변수 선택을 위해서는 해석이 가능한 선형함수기반 모델을 우선으로 한다. 해석이 불가능한 블랙 박스 모델(예를 들면, 랜덤포레스트, XGBOOST 등)의 경우에는 변수 선택에 어려움이 있기 때문이다.
+
+<p>
+
+아래에 제시된 19개의 동에는 대여소가 존재하지 않았는데, 그 이유로는 두 가지가 존재함을 알 수 있었다. 첫 번째로는 지리적인 요건으로 실제로 대여소가 없는 경우였다. 두 번째 이유로는 대여소가 행정동의 경계면에 위치하기 때문이었다. 행정동을 추출할 때 개별 대여소의 좌표에 기반하여 카카오 Developer의 Local REST API를 이용하여 행정동을 추출하였는데, 이 과정에서 각 행정동의 경계면에 위치해 있는 대여소의 경우 실제 대여소가 속한 행정동이 아닌 바로 옆 행정동으로 처리되는 건이 일부 존재하였다. 하지만 인접한 행정동의 경우 비슷한 특성을 가질 것이 예상되기 때문에 추가로 처리하지 않고 406개의 행정동 데이터만 사용하였다.
+
+*데이터 상 공공자전거 대여소가 존재하지 않는 19개 행정동(제거됨)*
+
+-   창신2동, 이태원2동, 면목3,8동, 장위2동, 창3동, 갈현1동, 염리동, 신월6동, 화곡2동, 시흥5동, 신길4동, 대림1동, 상도3동, 상도4동, 사당4동, 청림동, 신원동, 방이2동, 위례동
+
+*변수 선택을 위한 행정동 데이터*
+
+```{r}
+danger_original = danger_road %>% dplyr::select(-c(15:25))
+danger_original %>% head(10) %>% paged_table()
+danger = danger_original %>% dplyr::select(-행정동코드, -행정동명)
+```
+
+#### **1. 상관관계 분석**
+
+<p>
+
+첫 번째로는 행정동 데이터의 독립변수들 간 상관관계를 확인해 보았다. 상관관계가 높은 독립변수들은 다중공선성을 일으켜 모델의 정확성을 떨어뜨린다.
+
+```{r fig.height=6, fig.width=6}
+
+# 변수들 간 상관관계 분석1
+corrplot::corrplot.mixed(cor(danger %>% dplyr::select(-총사고건수)))
+```
+
+```{r}
+danger = danger %>% dplyr::select(-사고다발지내사고건수) %>% 
+  mutate(어린이 = 남어린이+여어린이,
+            청소년 = 남청소년+여청소년,
+            청년 = 남청년+여청년, 
+            중장년 = 남중장년+여중장년,
+               .keep = "unused")
+```
+
+<p>
+
+앞서 총생활인구수를 연령대와 성별로 계층화 할 때 예상했던 것처럼, 생활인구간 상관관계가 뚜렷하게 큰 것으로 나타난다. 특히 같은 연령대의 경우에는 매우 강한 선형상관관계를 보였다. 사고다발지개수와 사고다발지내사고건수 또한 상관관계가 크게 나타났다. 이는 당연한 결과로 생각한다. 더하여 교차로개수와 연령대별 생활인구의 상관관계도 어느정도 존재하는 것으로 보인다. 따라서 우선 강한 상관관계를 보이는 같은 연령대 변수는 성별끼리 더해주었고, 사고다발지개수와 사고다발지내사고건수 중 사고다발지내사고건수 변수를 제거하였다.
+
+```{r fig.height=5, fig.width=5}
+# 변수들 간 상관관계 분석2 (합치고 제거하고)
+cor(danger) %>% corrplot::corrplot.mixed()
+```
+
+여전히 생활인구간 상관관계와 교차로개수와 생활인구간 상관관계가 존재하는 것으로 보인다. 상관관계가 존재하는 변수들은 변수 선택을 통하여 제거할 계획이다.
+
+#### **2. 종속변수의 분포 파악**
+
+<p>
+
+종속변수의 분포에 따라 고려할 수 있는 회귀모형이 달라진다. 따라서 적절한 회귀모형을 고려하기 위하여 다음과 같이 종속변수의 분포를 시각화하였다.
+
+```{r message=FALSE, warning=FALSE}
+ggplot(data = danger) + 
+  geom_histogram(aes(x=총사고건수), fill = "#CC99CC") + 
+  theme_minimal()+
+  labs(
+    title = "행정동별 사고건수 분포 히스토그램"
+  ) + 
+  theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_text(face = "bold", size = 15),
+    plot.title = element_text(face = "bold", size = 20, hjust = .5)
+  )
+
+```
+
+```{r}
+sprintf("총사고건수의 평균 : %f, 총사고건수의 분산 : %f",mean(danger$총사고건수),var(danger$총사고건수))
+result = overdisp::overdisp(danger, 1,2:7)
+sprintf("Overdispersion Test - Cameron & Trivedi, p-value = %f",result$p.value)
+```
+
+위 히스토그램에서 볼 수 있듯이 정규분포가 아닌 한쪽으로 치우친 형태를 보인다. 교통사고건수와 같은 count data는 포아송 분포를 가정하는 경우가 많다. 이때 데이터의 평균과 분산이 일치한다면 포아송 분포에 기반한 포아송 회귀 모형을 사용해도 좋지만, 과대산포가 발생하는 경우, 즉 분산이 평균보다 커지는 경우 포아송 분포 가정을 만족하지 않게 되기 때문에 포아송 모형을 사용할 수 없다. 이러한 과대산포 문제에 대처하기 위해서는 음이항 분포에 기반한 음이항 회귀 모형을 사용할 수 있다.
+
+위 결과 창에서 볼 수 있듯이 행정동별 총사고건수의 평균과 분산은 일치하지 않으며 통계적 검정을 통해 확인할 수 있었다. 따라서 과대산포가 존재함을 확인할 수 있었기에 변수 선택에서 음이항 회귀 모형을 통해 변수를 선택하고자 한다.
+
+<p>
+
+#### **3. 변수 선택 및 파생 변수 생성**
+
+**음이항 회귀모형에 기반한 변수 선택**
+
+```{r}
+# ###########################################
+# #음이항회귀(1)
+# nb_danger = glm.nb(총사고건수~., data = danger)
+# summary(nb_danger)
+# plot(nb_danger)
+# # AIC 2382.5 사고다발지, 어린이
+# 
+# 
+# #음이항회귀(2)
+# nb_danger = glm.nb(총사고건수~., data = danger %>% dplyr::select(-청소년))
+# summary(nb_danger)
+# plot(nb_danger)
+# # AIC 2381.4 사고다발지, 어린이
+# 
+# 
+# #음이항회귀(3)
+# nb_danger = glm.nb(총사고건수~., data = danger %>% dplyr::select(-청소년,-청년))
+# summary(nb_danger)
+# plot(nb_danger)
+# # AIC 2397.4 사고다발지 어린이 중장년
+# 
+# #음이항회귀(4)
+# nb_danger = glm.nb(총사고건수~., data = danger %>% dplyr::select(-청소년,-청년, -교차로개수))
+# summary(nb_danger)
+# plot(nb_danger)
+# # AIC 2377.5 다 유의
+# 
+# #음이항회귀(5)
+# nb_danger = glm.nb(총사고건수~., data = danger %>% dplyr::select(-교차로개수, -어린이, -중장년))
+# summary(nb_danger)
+# plot(nb_danger)
+# # AIC 2387.5 다 유의
+# 
+# #음이항회귀(6)
+# nb_danger = glm.nb(총사고건수~., data = danger %>% dplyr::select(-청소년,-청년, -교차로개수, -사고다발지개수))
+# summary(nb_danger)
+# plot(nb_danger)
+# # AIC 2407.9 다 유의
+
+```
+
++---+-------------------------------------------------------------------------------+--------------------------------+---------+
+|   | **음이항 회귀 모형**                                                          | **유의한 독립변수**            | **AIC** |
++===+===============================================================================+================================+=========+
+| 1 | *총사고건수 \~ 교차로개수 + 사고다발지개수 + 어린이 + 청소년 + 청년 + 중장년* | 사고다발지개수, 어린이         | 2382.5  |
++---+-------------------------------------------------------------------------------+--------------------------------+---------+
+| 2 | *총사고건수 \~ 교차로개수 + 사고다발지개수 + 어린이 + 청년 + 중장년*          | 사고다발지, 어린이             | 2380.5  |
++---+-------------------------------------------------------------------------------+--------------------------------+---------+
+| 3 | *총사고건수 \~ 교차로개수 + 사고다발지개수 + 어린이 + 중장년*                 | 사고다발지개수, 어린이, 중장년 | 2379.4  |
++---+-------------------------------------------------------------------------------+--------------------------------+---------+
+| 4 | *총사고건수 \~ 사고다발지개수 + 어린이 + 중장년*                              | 사고다발지개수, 어린이, 중장년 | 2377.5  |
++---+-------------------------------------------------------------------------------+--------------------------------+---------+
+| 5 | *총사고건수 \~ 사고다발지개수 + 청소년 + 청년*                                | 사고다발지개수, 청소년, 청년   | 2387.5  |
++---+-------------------------------------------------------------------------------+--------------------------------+---------+
+| 6 | *총사고건수 \~ 어린이 + 중장년*                                               | 어린이, 중장년                 | 2407.9  |
++---+-------------------------------------------------------------------------------+--------------------------------+---------+
+
+: 음이항회귀모형의 변수 선택
+
+위 표는 앞서 설명했던 행정동별 데이터에 기반한 음이항 회귀 모형의 요약 결과이다. 숫자 열을 제외한 가장 왼쪽의 열은 모형의 사용된 변수를 의미하며, 두 번째 열은 해당 모형에서 유의하다고 검정된 독립변수이다. 마지막으로 여러 모형 간의 비교를 위하여 AIC를 가장 오른쪽 열에 기록하였다. 이를 통하여 AIC가 2377.5로 가장 작은 4번 모형을 선택하게 되었고, 이때 사용된 모든 변수가 유의했다.
+
+*다중선형회귀모형 결과*
+
+```{r}
+# 계수
+lm_danger = lm(총사고건수~사고다발지개수+어린이+중장년, data=danger)
+summary(lm_danger)
+beta = lm_danger$coefficients
+
+# 표준화계수
+sd = apply(danger %>% dplyr::select(총사고건수, 사고다발지개수, 어린이, 중장년), 2, sd)
+
+cat("표준화계수 - ", 
+    "사고다발지개수 : ",beta[2]*sd[2]/sd[1],
+    "어린이 : ",beta[3]*sd[3]/sd[1], 
+    "중장년 : ",beta[4]*sd[4]/sd[1])
+```
+
+다음으로 위험도 관련 파생변수를 생성하기 위하여 다중선형회귀 모형을 고려하였다. 다중선형회귀 모형으로부터 얻어지는 회귀계수는 직관적이며 해석이 용이하다는 강점이 있다. 따라서 다중선형회귀 모형으로부터 얻어지는 회귀계수를 통해 '위험도'라는 파생변수를 생성하고자 하였다. 결과는 위와 같았으며 모든 회귀계수가 유의했다. 따라서 각 변수에 회귀계수를 가중치로 하여 더해주어 '위험도'라는 변수를 생성했다. 이때 각 변수의 분산이 다르기 때문에 이를 보정해줄 필요가 있었고, 이를 위하여 표준화된 계수를 사용했다. 표준화된 계수는 회귀 모형으로부터 얻어지는 회귀 계수에 독립변수와 종속변수의 표준편차 비로부터 구할 수 있다. 위의 표준화계수에 의하여 아래와 같이 행정동별 위험도를 생성하였다.
+
+$$
+표준화된계수(\beta_j^*) = \beta_j * s_{x_j }/ s_j 
+$$
+
+$$
+위험도 = 사고다발지개수 * 0.3710533 + 어린이 *  0.1575877 + 중장년 * 0.1719142 
+$$
+
+```{r}
+danger_add = danger %>% 
+  mutate(
+    위험도 = 사고다발지개수 * 0.3710533 + 어린이 *  0.1575877 + 중장년 * 0.1719142 
+  )
+```
+
+### **2. 대여소별 주변 접근성**
+
+두 번째 지표로는 대여소 주변 접근성이다. 접근성을 나타내기 위한 변수들 중 접근성과 관련이 높은 변수들을 선택하여 클러스터링에 이용하고자 한다. 변수를 선택하기 위한 방법으로 선형회귀모형과 일반화선형회귀모형을 고려하였다. 대여소의 접근성이 높을수록 이용건수가 높을 것이라는 가정 하에 대여소별 총이용건수를 종속변수(Y)로 하고 나머지 접근성 관련 변수들을 독립 변수로 하여 분석을 진행하였다. 사용된 데이터는 아래와 같다.
+
+```{r}
+access %>% head(20) %>% paged_table()
+access = access %>% dplyr::select(-대여소이름)
+```
+
+#### **1. 상관관계분석**
+
+위험도 변수 선택 과정과 마찬가지로 독립변수들 간 상관관계 분석을 실시하였다.
+
+```{r fig.align='center', fig.height=5, fig.width=5}
+#변수들 간 상관계수
+cor(access %>% dplyr::select(-총이용건수)) %>% corrplot::corrplot.mixed()
+```
+
+큰 상관관계를 갖는 변수들은 없어보인다.
+
+#### **2. 종속변수의 분포 파악**
+
+종속변수의 분포에 따라 고려할 수 있는 회귀모형이 달라진다. 따라서 적절한 회귀모형을 고려하기 위하여 다음과 같이 종속변수의 분포를 시각화하였다.
+
+```{r fig.height=4, fig.width=8, message=FALSE, warning=FALSE}
+# no transformation -> 치우침 너무 심함
+
+ggplot(data=access) + 
+  geom_histogram(aes(x=총이용건수), fill = "#CC99CC") +
+  theme_minimal()+
+  labs(
+    title = "대여소별 이용건수 분포 히스토그램"
+  ) + 
+  theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_text(face = "bold", size = 15),
+    plot.title = element_text(face = "bold", size = 20, hjust = .5)
+  )
+sprintf("총이용건수의 평균 : %f, 총사고건수의 분산 : %f",mean(access$총이용건수),var(access$총이용건수))
+result = overdisp::overdisp(access, 1,2:6)
+sprintf("Overdispersion Test - Cameron & Trivedi, p-value = %f",result$p.value)
+```
+
+종속변수인 대여소별 총이용건수 분포를 시각화한 그림이다. 앞서 살펴보았던 행정동별 자전거 사고건수 분포와 비슷하다고 생각된다. 따라서 비슷한 방법으로 음이항 분포를 고려하였다.
+
+#### **3. 변수 선택 및 파생 변수 생성**
+
+```{r}
+# VIF는 낮은데 설명력이 너무 약하고 회귀 기본 가정도 만족하지 못함
+# # 1. 트랜스포매이션 고려(여존슨변환)
+# lm_access = lm(yeo.johnson(y=총이용건수, lambda = .15)~., data = access)
+# summary(lm_access)
+# plot(lm_access)
+# 
+# # 2. 다른 회귀 모형 고려(음이항회귀, 과대산포때문에)
+# # (1) FULL model
+# nb_access = glm.nb(총이용건수~., data=access)
+# summary(nb_access)
+# # 정류장 한강 카페
+# # AIC 24830
+# 
+# # (2) -한강
+# nb_access = glm.nb(총이용건수~., data=access %>% dplyr::select(-contains("한강")))
+# summary(nb_access)
+# # 카페
+# # AIC 24892
+# 
+# # (3) -대여소, -역
+# nb_access = glm.nb(총이용건수~., data=access %>% dplyr::select(-인접대여소개수, -인접역개수))
+# summary(nb_access, dispersion = 2)
+# # 정류장 한강 카페
+# # AIC 24828
+
+
+
+# 두 결과 모두 인접한 정류장개수,한강공원개수,카페개수를 유의하다고 함
+
+```
+
++---+------------------------------------------------------------------------------------------------+------------------------------------------------+---------+
+|   | **음이항 회귀 모델**                                                                           | **유의한 독립변수**                            | **AIC** |
++===+================================================================================================+================================================+=========+
+| 1 | *총이용건수 \~ 인접대여소개수 + 인접역개수 + 인접정류장개수 + 인접한강공원개수 + 인접카페개수* | 인접정류장개수, 인접한강공원개수, 인접카페개수 | 24830   |
++---+------------------------------------------------------------------------------------------------+------------------------------------------------+---------+
+| 2 | *총이용건수 \~ 인접대여소개수 + 인접역개수 + 인접정류장개수 + 인접카페개수*                    | 인접카페개수                                   | 24892   |
++---+------------------------------------------------------------------------------------------------+------------------------------------------------+---------+
+| 3 | *총이용건수 \~ 인접정류장개수 + 인접한강공원개수 + 인접카페개수*                               | 인접정류장개수, 인접한강공원개수, 인접카페개수 | 24828   |
++---+------------------------------------------------------------------------------------------------+------------------------------------------------+---------+
+
+행정동별 데이터에서의 변수 선택과 똑같은 가정으로 AIC를 확인하였으며 AIC가 가장 작은 3번 모델을 선택하였고, 이때 사용된 변수는 모두 유의하였기에 인접정류장개수, 인접한강공원개수,인접카페개수 세 가지의 변수를 대여소의 접근성과 관련된 대표 변수로 선택하였다.
+
+```{r}
+# 계수
+lm_access = lm(총이용건수~인접정류장개수+인접한강공원개수+인접카페개수, data=access) 
+summary(lm_access)
+beta = lm_access$coefficients
+
+# 표준화계수
+sd = apply(access %>% dplyr::select(-인접대여소개수, -인접역개수), 2, sd)
+cat("표준화계수 - ", 
+    "인접정류장개수 : ",beta[2]*sd[2]/sd[1],
+    "인접한강공원개수 : ",beta[3]*sd[3]/sd[1], 
+    "인접카페개수 : ",beta[4]*sd[4]/sd[1])
+
+```
+
+다음으로 접근성 관련 파생변수를 생성하기 위하여 다중선형회귀 모형을 고려하였다. 다중선형회귀 모형으로부터 얻어지는 회귀계수를 통해 '접근성'이라는 파생변수를 생성하고자 하였다. 결과는 위와 같았으며 모든 회귀계수가 유의했다. 따라서 각 변수에 회귀계수를 가중치로 하여 더해주어 '접근성'이라는 변수를 생성했다. 이때 각 변수의 분산이 다르기 때문에 이를 보정해줄 필요가 있었고, 이를 위하여 표준화된 계수를 사용했다. 위의 표준화계수에 의하여 아래와 같이 대여소별 접근성 변수를 생성하였다.
+
+$$
+접근성 = 인접정류장개수 * 0.07618225 + 인접한강공원개수 * 0.2070028 + 인접카페개수 * 0.07716676
+$$
+
+```{r}
+access_add = access %>% mutate(
+  접근성 = 인접정류장개수 * 0.07618225 + 인접한강공원개수 * 0.2070028 + 인접카페개수 * 0.7716676
+) 
+```
+
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+
+# **군집 분석**
+
+위의 변수 선택 과정에서 생성했던 `접근성`과 `위험도`변수를 이용하여 비지도학습 방법 중 하나인 군집 분석을 하고자 한다. 비지도학습의 특성 상 알고리즘의 평가 기준이 절대적이지 않다. 하지만 추가적인 데이터에 대한 이해를 도우며 군집 분석의 경우 세세한 군집 별 분석을 가능하게 한다는 장점이 있어 사용하게 되었다. 군집 분석에 사용할 데이터는 아래와 같다.
+
+*군집 분석에 사용할 접근성과 위험도 데이터*
+
+```{r}
+# 최종데이터
+final = left_join(
+# 대여소별 접근성
+cbind(bike_place_final %>% dplyr::select(대여소번호:시군구명), access_add %>% dplyr::select(접근성)),
+# 행정동별 위험도
+cbind(danger_original %>% dplyr::select(행정동코드, 행정동명), danger_add %>% dplyr::select(위험도)),
+by = c("행정동코드", "행정동명"))
+
+final %>% dplyr::select(대여소번호, 대여소이름, 행정동명, 접근성, 위험도) %>%  head(20) %>% paged_table()
+```
+
+```{r}
+
+# 데이터 생성
+clustdata = final %>% dplyr::select(접근성, 위험도)
+clustdata = clustdata %>% scale()
+
+# # 최적클러스터
+# set.seed(1234)
+# wss_method = clustdata %>% fviz_nbclust(kmeans, method ="wss")
+# silhouette_method = clustdata %>% fviz_nbclust(kmeans, method ="silhouette")
+# 
+# grid.arrange(wss_method, silhouette_method,layout_matrix = rbind(c(1,2)))
+
+
+```
+
+### **1. K-평균 군집 분석**
+
+군집 분석에는 연속형 변수들의 거리 및 중심점에 기반한 K-평균 군집 분석, 모든 관측치들 간의 거리를 고려하여 트리 형태의 군집을 그리는 계층적 군집 분석, 관측치들 간 밀도 기반의 DBSCAN 등 다양한 방법이 존재 한다. 이번 분석에서는 모든 변수가 연속형이면서, 변수의 개수가 2개로 상대적으로 적기 때문에 가장 간편하다고 생각되는 K-평균 군집 분석을 사용하고자 한다. 이 군집 분석을 통해 기대하는 것은 접근성과 위험도의 차이가 존재하는 군집이 생성되는 것이며, 최종적으로 접근성이 높으면서 위험도 또한 높아 자전거 사고가 많이 발생할 것으로 생각되는 지역을 선정하고 자전거 도로 신설을 제안하고자 한다. 본인은 접근성과 위험도 각각 '상', '중', '하'의 3개의 범주로 나뉘어 총 9개의 조합을 가진 군집을 생성할 것을 기대하므로 군집의 개수(K)를 9로 설정하고 9-평균 군집 분석을 진행하였다. 결과는 아래와 같다.
+
+*9-평균 군집 분석 결과*
+
+```{r}
+
+# K = 9 생성
+set.seed(1234)
+k_cluster = clustdata %>% kmeans(9, nstart = 1, iter.max = 50)
+
+# 시각화
+fviz_cluster(k_cluster, data = clustdata,
+             geom = c("point"),
+             ellipse.type = "convex",
+             ggtheme = theme_classic())
+
+```
+
+*군집 별 접근성과 위험도 평균*
+
+```{r}
+
+cluster = k_cluster$cluster
+cbind(final, cluster) %>% group_by(cluster) %>% 
+  summarise(접근성평균 = mean(접근성),
+            위험도평균 = mean(위험도)) %>% 
+  mutate(접근성순위 = rank(접근성평균),
+          위험도순위 = rank(위험도평균))
+
+# cbind(final, cluster) %>% group_by(cluster) %>% 
+#   summarise(`클러스터에 속한 대여소 개수` = n())
+
+
+```
+
+분석 방향에 맞게 적절히 나뉘어졌다고 생각한다. 총 9개의 군집이 각각 다른 색으로 구분되고 있으며, 아래의 표를 통하여 군집별 순위를 구할 수 있었다. 순위가 낮을수록(숫자가 클수록) 접근성 또는 위험도가 높다는 의미이며, 8번 군집의 경우 다른 군집에 비해 접근성과 위험도가 7위와 8위 둘 다 높은 편으로 분석의 대상이 되기에 적절하다고 생각할 수 있다. 따라서 이 군집 분석을 통하여, 8번 군집을 중심으로 알아보고자 한다.
+
+```{r}
+#8번 클러스터만 저장
+clusterdata = cbind(final, cluster) %>% filter(cluster == 8)
+
+# 클러스터별 분포 지도 함수
+get_cluster_map = function(n){
+  
+  qmap(location = "Seoul", zoom = 11, source = "stamen", maptype="toner-lite") +
+    geom_polygon(data = seoul_emd_map, aes(x=long, y=lat, group=group), fill = "white", color = "grey30") + 
+    geom_point(data = cbind(final, cluster) %>% filter(cluster == n),
+               aes(x=long, y=lat, color = GU)) + 
+    labs(title = sprintf("클러스터 %d에 속하는 대여소",n),
+         color = "시군구명") + 
+    theme(
+      plot.title = element_text(face = "bold", hjust = .5, size = 15),
+      legend.position = "bottom"
+    )
+      
+}
+
+```
+
+### **2. 군집 분석**
+
+```{r}
+get_cluster_map(8)
+```
+
+8번 군집에 속하는 대여소들을 구별로 시각화를 해본다면 위와 같다. 총 7개의 지역구가 해당 군집에 속해있으며, 우측 상단의 노원구를 제외한다면 모두 지역구 내에서도 밀집된 곳에서 접근성과 위험도가 높은 편임을 알 수 있다. 이는 위험도가 대여소가 아닌 행정동을 기준으로 산출되었기 때문이라고 생각한다. 다음으로는 8번 군집에 해당하는 7개의 지역구에 대해 각각 알아보자.
+
+```{r message=FALSE, warning=FALSE}
+
+get_hdong_detail = function(name){
+  
+  if ( !(name %in% c("강남구", "강서구", "서초구", "종로구", "강동구", "노원구", "영등포구")) ){
+    return(NULL)
+  }
+  
+   clusterdata %>% filter(시군구명 == name) %$% 
+    get_stamenmap(bbox = c(left = min(long)-0.007, bottom = min(lat)-0.003, right = max(long)+0.007, top = max(lat)+0.003),
+                    zoom = 14,
+                    maptype = "toner-lite") %>% 
+    ggmap() +
+     
+    geom_polygon(data = bike_road, aes(x=long,y=lat,group=group), color = "#ff7859", size= .8) + 
+     
+    geom_point(data = clusterdata %>% filter(시군구명 == name), 
+               aes(x=long, y=lat), color = "green1", size = 4, alpha = .8) + 
+     
+    geom_point(data = clusterdata %>% filter(시군구명 == name), 
+               aes(x=long, y=lat), color = "white", size = 2.5) + 
+     
+    geom_label(data = clusterdata %>% filter(시군구명 == name),
+               aes(x=mean(long), y=mean(lat), label = 행정동명),
+               nudge_x = -0.01,
+               nudge_y = 0.006) +
+     
+    # geom_label(data = clusterdata %>% filter(시군구명 == name), 
+    #            aes(x=long-0.001, y=lat+0.0005, label = 대여소번호), color = "grey15", size = 4,
+    #            label.size = 0.1,
+    #            fill="#69b3a2")+
+    labs(
+      title = str_c(name,"의 자전거 도로와 공공자전거 대여소")
+    ) + 
+    theme_void() + 
+    theme(
+      plot.title = element_text(face= "bold", hjust = .5, size= 15)
+    )
+    
+}
+
+```
+## **제안 - 강남구**
+```{r}
+get_hdong_detail("강남구")
+```
+접근성과 위험도가 둘 다 높은 곳으로 선정된 클러스터8에 해당하는 지역구 중 강남구에 대한 지도이다. 강남구 중에서도 역삼1동 주변의 공공자전거 대여소가 같은 군집으로 묶여있다. 지도에 표시된 테헤란로는 바로 옆 언주로와 달리 자전거 도로가 설치되어 있지 않다. 때문에 접근성과 사고 위험도가 높은 이곳에 자전거 도로를 설치하게 된다면 바로 옆 언주로 자전거 도로와의 연결성과 테헤란로의 놓여져 있는 공공자전거 대여소들 간의 연결성 또한 확보될 것으로 기대할 수 있다.
+
+
+
+## **한계 - 영등포구**
+```{r}
+get_hdong_detail("영등포구")
+```
+하지만 똑같이 접근성과 위험성이 높은 곳이더라고 위 지도에서처럼 이미 자전거 도로가 상당수 설치되어 있는 영등포구도 같은 클러스터에 묶였다. 여기서 이번 분석의 한계가 드러난다고 할 수 있다. 접근성과 위험성이라는 지표에는 해당 지역 또는 대여소에 자전거 도로가 이미 설치되어 있는지는 고려되고 있지 않다. 따라서 위와 같이 이미 자전거 도로가 있는 곳 또한 선정될 수 있다는 것이 이 분석의 한계로 뽑힐 수 있다.
+
+
+# **한계 및 의의**
+```{r}
+get_hdong_detail("종로구")
+```
+[대통령령 제31516호, 자전거 이용 활성화에 관한 법률 시행령]에 의하면 도로 위에 설치되는 자전거 도로는 대통령령으로 정하는 기준보다 적은 통행량의 도로에만 설치할 수 있다. 이때 기준보다 적은 도로란 일일 통행량이 2천대 미만인 도로를 말한다. 따라서 일일 통행량이 2천대 이상이라면 자전거 도로를 설치할 수 없게 된다. 하지만 본 분석에서는 도로별 통행량에 대한 자료를 얻지 못하여 이를 분석에 반영할 수 없었다. 클러스터 8에 묶인 종로구의 경우가 바로 앞서 말한 기준 통행량을 넘어서는 경우에 해당한다. 따라서 적절한 군집으로 분류되었다고 하더라도 현실적으로 자전거 도로가 설치되기에는 문제가 있다는 것이다. 그럼에도 불구하고 접근성과 위험도의 차이에 따라 군집이 잘 나뉘어진 것은 분명 의미가 있다고 생각한다.

@@ -1,0 +1,910 @@
+---
+title: | 
+       | 서울시 공공자전거의 수요 패턴 분석을 통한
+       | 자전거 전용 도로 신설 제안
+
+author: "고경현"
+date: '2021.4.21'
+output: html_document
+---
+
+```{=html}
+<style type="text/css">
+
+h1.title {
+
+font-size: 38px;
+
+text-align: center;
+
+}
+
+h4.author { /\* Header 4 - and the author and data headers use this too \*/
+
+font-size: 18px;
+
+color: Black;
+
+text-align: center;
+
+}
+
+h4.date { /\* Header 4 - and the author and data headers use this too \*/
+
+font-size: 18px;
+
+color: Black;
+
+text-align: center;
+
+}
+
+</style>
+```
+
+
+```{r basic setup, message=FALSE, warning=FALSE, include=FALSE}
+
+library(tidyverse)
+library(magrittr)
+library(knitr)
+library(lubridate)
+library(data.table)
+library(ggmap)
+library(maptools)
+library(raster)
+library(rgdal)
+library(rgeos)
+library(leaflet)
+library(gridExtra)
+library(cowplot)
+library(rmarkdown)
+library(VIM)
+library(DT)
+library(hrbrthemes)
+
+
+my_theme = theme_minimal() + 
+  theme(
+    plot.title = element_text(hjust=0.5, face = "bold"),
+    plot.subtitle = element_text(hjust=0.5),
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(face = "bold", size=11),
+    axis.text.y = element_text(hjust = 1, face = "bold"))
+
+bike = fread("bike/rent_record/hour/공공자전거_이용기록_시간대별.csv") %>% mutate(distance_moved = distance_moved/10) # 시간별 대여기록
+sky = fread("weather/2020_서울_시간별_날씨.csv") # 날씨
+dust = fread("weather/2020_서울_미세먼지_시간별_평균.csv") # 미세먼지
+
+
+bike_place = fread("bike/rent_place/서울시_공공자전거_대여소_정보.csv", encoding = "UTF-8") %>% 
+dplyr::select(-date_built, -LCD_count, -QR_count, -type) # 대여소 정보 열 필터링
+accidentInfo = fread( "final_dataset/accidentInfo.csv") # 2019년 서울교통사고 전체
+hanriver = fread("final_dataset/hanriver.csv") # 한강공원 좌표
+seoul_id = fread("final_dataset//seoul_id.csv") # 지역구 코드
+seoul_map = fread("final_dataset/seoul_map.csv") # 시군구
+bike_road = fread("final_dataset/bike_road.csv") # 자전거도로
+accident = fread("final_dataset/accident.csv") %>% rename(GU = "시군구명") # 자전거 교통사고 다발지
+
+write.csv(accidentInfo, "final_dataset/accidentInfo.csv", row.names = F)
+hanriver %<>% rename(long =  "lon")
+
+
+register_google(key = "AIzaSyB7U3Nnn7N05oTyHhlsjIxZ9uUfbAVTTDU", write = T)
+#카카오 Rest API key
+kakao_api_key = "4f732d4bcbe257beeda49cfd137d95e6"
+
+my_theme = theme_minimal() + 
+  theme(
+    plot.title = element_text(hjust=0.5, face = "bold"),
+    plot.subtitle = element_text(hjust=0.5),
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(face = "bold", size=11),
+    axis.text.y = element_text(hjust = 1, face = "bold"))
+
+
+
+```
+
+```{r}
+
+#영등포 
+qmap("youngdeongpogu", zoom = 13, source = "stamen", maptype="terrain-lines") + 
+  geom_polygon(data = bike_road, 
+               aes(x=long, y=lat, group = group), color = "darkslategray1") + 
+  geom_point(data = bike_place %>% filter(GU == "영등포구"), 
+             aes(x=long, y=lat), color = "blue") + 
+  geom_point(data = accident %>% filter(GU == "영등포구"), 
+             aes(x=long, y=lat),
+             color = "red", size = 5, alpha = 0.5)
+
+
+```
+
+
+# 교통사고 정보 EDA
+## 1.
+```{r fig.height=6, fig.width=6}
+
+acci_seoul_map = accidentInfo %>% group_by(id) %>% 
+  summarise(count = n()) %>% 
+  left_join(seoul_map, by = "id")
+
+qmap(location = "Seoul", zoom = 11, source = "stamen", maptype="toner-lite") +
+  geom_polygon(data = acci_seoul_map, aes(x=long, y=lat, group=group, fill = count), 
+               color = "grey", alpha = 0.7) +
+  # geom_text(data = acci_seoul_map %>% group_by(GU) %>% summarise(long = mean(long), lat = mean(lat)),
+  #           aes(x=long, y=lat, label = GU)) + 
+  geom_label(data = acci_seoul_map %>% 
+               group_by(GU) %>% 
+               summarise(long = mean(long), lat = mean(lat), count = count) %>%
+               distinct(GU, .keep_all = T) %>% 
+               mutate(large = ifelse(count > 100, 1, 0)) ,
+            aes(x=long, y=lat, label = GU, color = large),
+            label.padding = unit(0.10, "lines"),
+            label.size = NA) + 
+  scale_color_continuous(low = "black", high =  "firebrick") + 
+  scale_fill_continuous(low = "white", high = "cyan") + 
+  labs(fill = "발생 건수", title = "지역구 별 사고 발생 건수 지도")+
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", size = 15)
+  ) + 
+  guides(color = FALSE)
+
+
+
+```
+
+# 교통사고 정보 EDA
+## 2.
+```{r message=FALSE, warning=FALSE}
+
+# 사고 건수가 최소인 월과 그때의 사고 건수
+accidentInfo %>% group_by(month, GU) %>% 
+  summarise(count=n()) %>% ungroup %>% 
+  group_by(GU) %>% 
+  filter(count == min(count)) %>% 
+  distinct(GU, .keep_all = T) %>% group_by(month) %>% summarise(n())
+
+# 사고 건수가 최대인 월과 그때의 사고 건수
+accidentInfo %>% group_by(month, GU) %>% 
+  summarise(count=n()) %>% ungroup %>% 
+  group_by(GU) %>% 
+  filter(count == max(count)) %>% 
+  distinct(GU, .keep_all = T) %>% group_by(month) %>% summarise(n())
+
+# 월별 사고분포 박스플랏
+accidentInfo %>% group_by(month, GU) %>% 
+  summarise(count=n()) %>% 
+  spread(key = GU, value = count) %>% 
+  mutate_all(~replace(., is.na(.), 0)) %>% 
+  gather(key = "GU", value = "count", -1) %>% 
+  ggplot(aes(x=GU, y= count)) + 
+  geom_boxplot(aes(fill = GU, color = GU), alpha = 0.7) +
+  geom_abline(slope = 0, intercept = 0, linetype = "dashed") + 
+  labs(title = "지역구별 월별 사고 건수 분포",
+       x = "지역구",
+       y = "사고 건수") + 
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+        plot.title = element_text(face = "bold", size = 20),
+        axis.title = element_text(face = "bold", size = 15, color = "dimgrey"),
+
+  )
+    
+```
+
+
+<center>
+
+대용량 자료관리 및 시각화
+
+</center>
+
+# 배경
+
+공공자전거(Puplic bicycle)
+
+:   주민들의 편의를 도모하고 교통 체증, 대기오염 문제를 해결하기 위해 정부나 지역 내 민간단체가 대여, 반납 체계를 갖춰 주민들에게 빌려주는 자전거를 말한다.
+
+서울시의 공공자전거 따릉이부터, 세종시의 어울링, 광주광역시의 타랑께 등 각자 개성이 넘치는 이름들의 공공자전거가 10곳이 넘는 지자체에서 운영중이다. 이번 보고서에서는 서울시의 따릉이를 중심으로 수요 패턴을 분석해보고 나아가 자전거 전용 도로의 신설 입지를 제안해보고자 한다.
+
+서울시에서는 탄소 배출 감량을 통한 녹색 성장 프로젝트의 일환으로 지난 2014년 '서울바이크'라는 이름으로 시범 운영을 시작했다. 이후 서울시 공공자전거 명칭 공모전을 통해 '따릉이'라는 이름으로 2015년 10월 2천대의 공공자전거를 운영하기 시작했다.
+
+2015년을 시작으로 현재 2021년 약 3만2천대의 공공자전거가 서울 곳곳에 배치되어 있다. 2020년 3월부터는 다양한 개선을 통해 기존에 자전거와 자전거 거치대를 유선으로 연결했던 LCD 시스템에서, 별도의 거치대 없이 QR코드와 고리형 잠금 장치로 잠금 형태가 개편되었다. 또한 2020년 11월부터는 무게와 크기를 줄여 낮은 연령대를 대상으로 하는 '새싹 따릉이'도 새로이 출시하였다.
+
+# 문제 인식
+
+코로나로 인한 비대면 플랫폼들이 활성화 됨에 따라 시민들의 자전거와 등 개인형 이동수단을 이용하는 사람이 급증하고 있다. 이러한 움직임은 지난 3월 서울시 교통정보 시스템에서 발표한 '2020년 서울시 대중교통 성적표' 에서도 확연히 드러난다. 이 발표에 의하면 버스와 지하철을 아우르는 대중교통의 이용건수는 전년대비 25.9% 감소했지만, 서울시가 운영하는 공공자전거 '따릉이'의 이용건수는 전년대비 24.6% 증가했다.
+
+<center>
+
+![출처: 서울시 교통정보 시스템](C:/Users/whoe9/Desktop/stat_project/plot/bike1.png){width="400"}
+
+</center>
+
+지하철과 버스의 절대적인 이용량이 많은 것은 사실이지만 포스트 코로나 시대로 접어들면서 나타난 이러한 공공자전거 이용률의 증가는 충분히 유의미한 것이라고 생각한다. 그렇다면 이렇게 자전거 이용량에 따라 등장하는 문제점은 없을까?
+
+<center>
+
+![공공자전거 개인 계정 이용기록](C:/Users/whoe9/Desktop/stat_project/etc/%EB%94%B0%EB%A6%89%EC%9D%B4_%EC%9D%B4%EC%9A%A9%EB%82%B4%EC%97%AD.PNG){width="560"}
+
+</center>
+
+위 사진은 서울 자전거 따릉이 사이트의 이용 기록이다. 지난 2019년부터 꾸준히 따릉이를 이용한 나는 서울 곳곳에서 자전거 통행로의 부재를 실감했다. 자전거는 도로교통법 상 '차'로 분류되어 보도와 차도가 구분된 곳에서는 반드시 차도 오른쪽 가장자리에서 운전해야한다. 차도 가장 바깥쪽에 따로 구역을 마련하여 자전거 전용도로가 있는 곳이 있는 반면, 차도 노면에 '자전거 우선도로'라는 표시만 있는 채 자전거의 통행을 지시하는 곳도 있었다. 하지만 이러한 '자전거 우선도로'에서 자전거를 운전할 시에 뒤에서 빠르게 달려오는 자동차를 인지하기 어려우며, 버스나 택시 등 승객의 승하차를 위해 도로 가장자리를 자주 이용하는 차들 또한 도로 위에서 자전거를 운전할 때의 위험 요인이다. 이러한 문제점 속에서 자전거 전용도로 신설 필요성을 느꼈으며, 공공자전거 이용 형태를 분석해봄으로써 자전거 전용도로의 새로운 입지를 선정해보고자 한다.
+
+<center>
+
+# 사용 데이터 설명
+
+</center>
+
+### 1. `bike` 서울특별시 공공자전거 이용정보(시간대별) (2020.01-2020.12) (CSV)
+
+> 출처 : 서울 열린데이터 광장
+>
+> 크기 : 951202 x 8
+>
+> 설명: 공공자전거 대여 이력을 날짜 및 시간 별로 아래와 같은 정보로 표현함.
+>
+> -   대여일자 : 연월일로 표기
+>
+> -   대여소 번호 : 대여소 고유 번호 (\#\#\#\~\#\#\#\#)
+>
+> -   대여소 이름 : 위치를 직관적으로 가장 잘 설명할 수 있는 형태의 대여소 이름 (예: 합정역 7번 출구 앞)
+>
+> -   이용권 형태 : 정기권, 일일권(회원), 일일권(비회권), 단체권. 총 네 가지의 범주로 구성됨.
+>
+> -   성별 : 남자(M), 여자(F)로 표기. 2018년 7월부터 공공자전거 회원가입 시 성별 기입이 선택 사항으로 변경돼 누락된 값 존재.
+>
+> -   연령대 : 10대부터 80세 이상까지 10살 단위로 구분
+>
+> -   이용시간 : 이용시간. 단위(분)
+>
+> -   이동거리 : 이동거리. 단위(m)
+>
+> 사용 이유 : 대여 유형을 성별, 이용권 형태, 연령대 별로 다양하게 파악함으로써 주된 이용층을 파악하기 위함. 나아가 다른 데이터들과의 결합으로 유의미한 파생변수 생성을 기대.
+>
+> 참고 사항 : 메모리 문제로 각 월 별 5%의 데이터만 이용.
+
+### 2. `bike_place` 서울특별시 공공자전거 대여소 정보 (2021.01.31 기준) (CSV)
+
+> 출저 : 서울 열린데이터 광장
+>
+> 크기 : 2152 x 6
+>
+> 설명 : 대여소 고유 번호와, 대여소가 위치한 지역구 이름, 대여소의 위경도 좌표를 담고 있음.
+>
+> 사용 이유 : 좌표 정보를 통해 각 대여소 별 위치를 지도에 시각화 하여 지역구 별 대여소의 분포를 알아보고, 대여가 자주 발생하는 대여소의 지리적 특징을 알아보기 위함.
+
+### 3. `sky` 서울시 시간별 날씨 정보 (2020.01-2020.12) (CSV)
+
+> 출처 : 기상자료개방 포털
+>
+> 크기 : 8784 x 6
+>
+> 설명 : 서울 시간별 기온, 강수량(mm), 적설량(cm), 하늘 상태(맑음, 구름 많음, 흐림) 측정 데이터
+>
+> 사용 이유 : 날씨는 우리 생활 전반적인 요소에 영향을 미치고, 공공자전거 수요에 가장 큰 영향을 미치는 요소라고 생각하기 때문.
+
+### 4. `dust` 서울시 시간 평균 대기오염도 정보 (2020.01-2020.12) (OPEN API)
+
+> 출처 : 서울 열린데이터 광장
+>
+> 크기 : 8784 x 4
+>
+> 설명 : 일자별, 시간별 각 지역구의 대기 수준 측정값 (미세먼지(PM10), 초미세먼지(PM10))
+>
+> 사용 이유 : 시간 별 대기 오염 수준에 따른 따릉이 대여 건 수에 유의미한 특징을 알아보기 위함.
+
+### 5. `hanriver` 서울시 한강공원 좌표 (CSV)
+
+> 출처 : 자체 제작
+>
+> 크기 : 12 x 3
+>
+> 설명 : 구글 맵 API 와 `ggmap` 패키지의 `geocode` 함수를 활용하여 서울시 한강공원들의 위치 좌표를 기록.
+>
+> 사용 이유 : 한강 공원 주변 대여소가 다른 대여소들과 비교하여 차이가 있는지 알아보고자 함.
+
+### 6. `seoul_id` 서울시 지역구 고유 번호 (CSV)
+
+> 출처 : [Clue's Blog (givitallugot.github.io)](https://givitallugot.github.io/)
+>
+> 크기 : 25 x 2
+>
+> 설명 : 서울시 25개 지역구의 고유 번호가 기록되어 있는 데이터.
+>
+> 사용 이유 : 서울시 25개 지역구의 고유 번호를 통해 데이터를 필터링을 하고, 지도 시각화를 진행하기 위함.
+
+### 7. `seoul_map` 서울시 지역구 구분 지도 (SHP)
+
+> 출처 : [GIS Developer](http://www.gisdeveloper.co.kr/?p=2332)
+>
+> 설명 : 서울시를 25개 지역구로 구분지은 shape 형태의 파일.
+>
+> 사용 이유 : 지도 시각화를 진행하기 위함.
+
+### 8. `bike_road` 서울시 자전거 전용도로 지도 (SHP)
+
+> 출처 : ArcGis REST Services Directory
+>
+> 설명 : 서울시 자전거 전용도로 shape 형태의 파일.
+>
+> 사용 이유 : 지도 시각화를 진행하기 위함.
+
+------------------------------------------------------------------------
+
+<center>
+
+# 전처리
+
+</center>
+
+데이터를 효율적으로 다루기 위한 결측값 처리, 데이터 병합 등의 전처리 과정이다.
+
+## 1. 결측값 처리
+
+기존 raw 데이터의 문제로 결측값이 존재하는 관측치들이 여럿 존재한다. 결측값 문제는 앞으로의 분석이나 데이터의 병합에서 정보의 손실로 이어질 수 있기 때문에 가장 먼저 처리해야 할 문제이다. 총 세 개의 데이터에서 결측값가 발견되었으며, 아래는 그 결측치들을 처리해나가는 과정이다.
+
+### 1-1. `bike_place` 공공자전거 대여소 데이터
+
+기존 대여소 정보에 100여개의 대여소 별 위경도 좌표 값이 누락되어 있어 NA값이 존재하여 구글 API와 카카오 API를 이용하여 결측값을 처리했다. 카카오 API가 비교적 빠른 응답 속도를 보였지만 좌표 값이 없는 주소에 대해 유연하게 반응하지 못했기에, 비교적 느리지만 정확한 구글 API를 사용하고 남은 부분을 카카오 API를 이용하여 결측치를 처리했다.
+
+``` {.r}
+## 1. 구글 API 이용
+#결측치 plot 확인
+bike_place %>% aggr(prop = F, numbers = T, col = c( "#B0E0E6", "#A52A2A"))
+
+#좌표 결측치가 있는 한글 주소 벡터로 저장
+bike_place_table = bike_place %>% as.data.table
+ADDRESS_with_NA = bike_place_table[is.na(long),ADDRESS] %>% as.vector
+
+#결측치가 존재하는 대여소 좌표 불러오기
+coord = geocode(enc2utf8(ADDRESS_with_NA))
+
+# 좌표 채워넣기
+bike_place[is.na(bike_place$lat), "lat"] = coord$lat
+bike_place[is.na(bike_place$long), "long"] = coord$lon
+-----------------------------------------------------------------------------------
+## 2. 카카오 API 이용
+#좌표 결측치가 있는 한글 주소 벡터로 저장
+bike_place_table = bike_place %>% as.data.table
+ADDRESS_with_NA = bike_place_table[is.na(long),ADDRESS] %>% as.vector
+
+#NA Imputation with coordinate
+#빈 dataframe 공간 생성 후 for 문으로 채워넣기
+ADDRESS_with_coord = tibble() 
+
+for ( i in 1:length(ADDRESS_with_NA)){
+
+  addr = ADDRESS_with_NA[i]
+  
+  #카카오 API로부터 위경도 좌표 받아오는 함수 만들어 사용
+  present_coordinate = get_coord_fromKAKAO(addr)
+  
+  ADDRESS_with_coord = rbind(ADDRESS_with_coord, present_coordinate)
+  
+}
+
+# 좌표 채워넣기
+bike_place[is.na(bike_place$lat), "lat"] = ADDRESS_with_coord$lat
+bike_place[is.na(bike_place$long), "long"] = ADDRESS_with_coord$long
+
+# 최종 결측치 plot 확인
+na_plot_final = bike_place %>% aggr(prop = F, numbers = T, col = c( "#B0E0E6", "#A52A2A"))
+```
+
+```{r echo=FALSE, fig.align='center'}
+
+
+include_graphics(c("plot/file_show.png","plot/file_show2.png"))
+
+
+```
+
+(좌) 결측치 처리 전 결측값 `NA` (붉은색) 분포. 112개 대여소의 위도`lat` 와 경도`long` 값이 `NA` 이다.
+
+(우) 결측치 처리 후 결측값이 존재하지 않는 것을 확인 할 수 있다.
+
+### 1-2. `bike` 공공자전거 이용기록(시간별) 데이터
+
+```{r include=FALSE}
+
+bike$gender %<>% toupper
+
+
+```
+
+```{r}
+unique(bike$gender)
+
+```
+
+2018년 7월 이후 공공자전거 가입 시 성별 기입이 선택 사항으로 변경되었다. 그렇기 때문에 성별 정보가 없는 위와 같은 관측치가 존재하여 아래 코드를 통해 비어있는 성별 값을 `"None"`으로 대체하였다.
+
+``` {.r}
+bike$gender[!(bike$gender %in% LETTERS)] = "X"
+```
+
+```{r include=FALSE}
+bike %<>% 
+  mutate(gender = toupper(gender))  
+
+bike$gender[!(bike$gender %in% LETTERS)] = "None"
+```
+
+## 2. 데이터 병합
+
+데이터를 효율적으로 다루기 위해, 그리고 데이터의 특성을 쉽게 파악하기 위한 데이터 병합 과정이다.
+
+### 2-1. `bike` 공공자전거 이용기록(시간별) 데이터와 `bike_place` 공공자전거 대여소 데이터 병합
+
+```{r include=FALSE}
+
+bike = left_join(bike, bike_place, by = c("rent_id" = "ID")) %>% 
+  relocate(rent_date, rent_hour, rent_id, NAME, GU) %>% 
+  arrange(rent_date, rent_hour, rent_id) %>% drop_na
+
+
+```
+
+``` {.r}
+bike = left_join(bike, bike_place, by = c("rent_id" = "ID")) %>% 
+  relocate(rent_date, rent_hour, rent_id, NAME, GU) %>% 
+  arrange(rent_date, rent_hour, rent_id)
+```
+
+`bike` 대여 이력 데이터에는 대여소 고유 번호와 대여소 이름만이 존재해 대여가 어디에서 발생했는지 위치를 파악하기 어렵다는 문제가 있었다. 이를 해결하기 위해 대여소 별 위경도 좌표가 있는 `bike_place` 데이터와 병합을 진행했다. 병합 한 결과는 다음과 같다. (메모리 문제로 전체 데이터의 1%만 출력)
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+bike %>% sample_frac(.01) %>% 
+  paged_table()
+```
+
+### 2-2. `sky`데이터와 `dust`데이터를 `weather`데이터로 통합 후 범주화
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=TRUE}
+
+#join
+weather = left_join(sky, dust, by=c("date", "hour") )
+
+#기존 데이터 제거
+remove(sky);remove(dust)
+
+
+```
+
+```{r include=FALSE}
+
+weather = weather %>% 
+  mutate(sky_type = ifelse(sky_type == 1 , "맑음", ifelse(sky_type == 4, "흐림", "구름많음")),
+         PM10 = cut(PM10, breaks = c(0,30,80,150,Inf),
+                    labels = c("좋음", "보통", "나쁨", "매우나쁨")),
+         PM2.5 = cut(PM2.5 , breaks = c(0,15,35,75,Inf),
+                     labels = c("좋음", "보통", "나쁨", "매우나쁨")))
+
+```
+
+``` {.r}
+weather = left_join(sky, dust, by=c("date", "hour") )
+
+weather %<>% 
+  mutate(sky_type = ifelse(sky_type == 1 , "맑음", ifelse(sky_type == 4, "흐림", "구름많음")),
+         PM10 = cut(PM10, breaks = c(0,30,80,150,Inf),
+                    labels = c("좋음", "보통", "나쁨", "매우나쁨")) %>% as.character(),
+         PM2.5 = cut(PM2.5 , breaks = c(0,15,35,75,Inf),
+                     labels = c("좋음", "보통", "나쁨", "매우나쁨")) %>% as.character())
+```
+
+날씨와 미세먼지 농도에 따른 공공자전거 수요를 알아보기 위해 시간별 서울시의 미세먼지 정보와 기온, 강수량, 적설량, 날씨의 정보를 `weather` 변수로 병합했다.
+
+기상개방포털의 기준에 근거하여 하늘상태(`sky_type`)를 `맑음`,`흐림`,`구름많음` 세 가지 범주로 구분하였다. 또한 환경부 기준에 근거 하여 미세먼지 수치( `PM10` 과 `PM2.5` )를 각각 '좋음'부터 '매우나쁨'까지 네 가지 범주로 구분하였다.
+
+## 3. 최종 데이터셋
+
+앞서 전처리한 모든 데이터는 대여이력과 연관성이 깊다고 생각되는 중요한 변수들을 포함하고 있다. 그렇기에 아래와 같이 공공자전거 대여에 영향을 미칠 수 있는 요인들을 한 데이터셋으로 만들었다.
+
+```{r include=FALSE}
+
+#자료형 통일
+bike %<>%
+  mutate(date = as_date(rent_date),
+         hour = as.numeric(rent_hour), .keep = "unused")
+
+weather %<>% 
+  mutate(date = as_date(date),
+         hour = as.numeric(hour))
+
+#join
+bike = left_join(bike, weather, by=c("date", "hour")) %>% relocate(date, hour)
+
+
+#기존 날씨 데이터 삭제
+remove(weather)
+
+bike %>% sample_frac(.01) %>% paged_table()
+
+```
+
+``` {.r}
+#join
+bike = left_join(bike, weather, by=c("date", "hour")) %>% relocate(date, hour)
+```
+
+위와 같이 '일자' 변수인 `date` 와 '시간' 변수인 `hour` 를 key 값으로 하여 대여소 별 좌표가 포함된 대여이력 데이터와 날씨 데이터를 병합하였다.
+
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+
+다음으로는 앞서 언급했던 최종 데이터셋 `bike` 를 가지고 다양한 시각화 방법을 통해 변수간의 관계들을 알아보려고 한다.
+
+<center>
+
+# EDA
+
+</center>
+
+## 1. 지역구 별 대여소 및 이용률 현황
+
+```{r echo=FALSE, fig.align='center', fig.height=5, fig.width=8}
+
+ggplot(data=NULL, aes(x=long, y=lat)) +
+  geom_polygon(data = seoul_map, aes(group=group)) +
+  geom_polygon(data = bike_road, aes(group=group), color = "lightblue2") +
+  geom_point(data = bike_place, color = "darkseagreen1", size = .5) + 
+  my_theme + 
+  theme_void()
+
+```
+
+서울시 자전거 전용도로의 분포와 공공자전거 대여소를 지도에 나타낸 것이다. 강동구가 위치한 우측과 북악산이 위치한 상단, 관악산이 위치한 하단을 제외한다면 공공자전거 대여소는 자전거도로를 따라, 지역구 전체에 고르게 분포되어 있는 듯이 보인다. 하지만 아래의 그림을 보면 지역구에 따라 대여소 개수의 차이가 있는 것을 알 수 있다.
+
+```{r echo=FALSE, fig.align='center', fig.height=5, fig.width=8}
+
+bike_place_count = bike_place %>% group_by(GU) %>%
+  summarise(count  = n())
+
+bike_place_count %>% left_join(seoul_map, by = "GU") %>% 
+  ggplot(aes(x=long, y=lat)) +
+  geom_polygon(aes(fill = count, group = group), colour = "black") + 
+  scale_fill_gradient(low = "#CEECF5", high = "#045FB4", space = "Lab", guide = "colourbar") +
+  labs(title = "서울시 공공자전거 대여소 분포 지도",
+       fill = " 대여소 개수") +
+  my_theme + 
+  theme_void() + 
+  theme(plot.title = element_text(hjust = .5, face = "bold", size = 20))
+  
+
+```
+
+위 지도에서 대여소의 불균형이 보이지만 실제 구별 공공자전거 이용량 분포가 대여소 분포와 비슷하다면 수요와 공급이 일치하는 것이기에 큰 문제가 없을 것이다. 그렇다면 대여소가 많은 곳에서는 이용이 활발할까? 아래 대여소 개수와 총 이용건수를 나타낸 두 그래프를 통해 비교해보자.
+
+```{r echo=FALSE, fig.height=8, fig.width=18, fig.align='center'}
+
+
+# 구 별 대여소 개수
+plot1 = bike_place %>%
+  group_by(GU) %>% 
+  summarise(count = n()) %>% 
+  ggplot(aes(x=reorder(GU, count))) +
+  geom_col(aes(y=count, fill=count), width = .7) +
+  scale_fill_gradient(low="#ECF6CE", high="#21610B") +
+  labs(title = "공공자전거 구별 대여소 설치 개수", subtitle = "2021.01.31 기준", y="대여소 개수") +
+  guides(fill = "none") +
+  geom_rect(aes(xmin = 20.5, ymin = -2, xmax = 25.5, ymax = 160), color = "gray23", fill="white", alpha = 0, size = 1.5) + 
+  my_theme + 
+  theme(title = element_text(size = 20),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, face = "bold"))
+    
+plot2 = bike %>% group_by(GU) %>% 
+  summarise(count = n()) %>% 
+  ggplot(aes(x=reorder(GU, count))) +
+  geom_col(aes(y=count, fill = count), width = .7) +
+  scale_fill_gradient(low="#ECF6CE", high="#21610B") +
+  geom_rect(aes(xmin = 20.5, ymin = -1000, xmax = 25.5, ymax = 80000), 
+            color = "gray23", fill="white", alpha = 0, size = 1.5) + 
+  labs(title = "공공자전거 구별 이용건 수",y="이용건수") +
+  guides(fill = "none") +
+  my_theme +
+  theme(title = element_text(size = 20),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, face = "bold"))
+
+grid.arrange(plot1, plot2, nrow = 1)
+
+```
+
+위 그래프에서 대체로 구별 대여소 개수와 이용건수의 분포가 비슷한 경향을 보이나, 강남구와 서초구는 대여소 설치 비율에 비해 이용률이 낮으며, 마포구와 영등포구, 광진구는 대여소 설치 비율에 비해 이용률이 높다. 이를 통해서 대여소의 공급와 공공자전거 이용 수요가 지역구별로 차이가 존재함을 알 수 있다.
+
+## 2. 이용량 상위 20개 대여소의 특징
+
+다음은 이용량이 가장 많은 상위 20개의 대여소를 파악해봄으로서 어떠한 특징이 있는지 알아볼 것이다. 따릉이는 서울 전역을 돌아다닐 수 있는 편리한 교통수단인 만큼 한강 공원 주변에도 대여소가 설치되어 있다. 한강공원은 자전거 도로가 잘 구성되어 있으므로 따릉이를 이용하는 사람이 많을 것이라고 가설을 세워보았다. 그렇다면 한강공원 주변의 대여소와 한강공원 주변이 아닌 대여소의 차이가 두드러질까? 아래 그림을 통해 알아보자.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+
+
+bike %>% group_by(rent_id, NAME, GU, lat, long) %>%
+  summarise(count  = sum(count)) %>% 
+  arrange(desc(count)) %>% head(20) %$%
+  get_googlemap(center = c(mean(long),mean(lat)),
+                zoom = 12,
+                maptype = "roadmap",
+                # color = "bw",
+                size = c(800,800)) %>% 
+  ggmap() +
+  geom_point(data = bike %>% 
+               group_by(rent_id, NAME, GU, lat, long) %>%
+               summarise(count  = sum(count)) %>%
+               arrange(desc(count)) %>% head(20) ,
+             aes(x=long, y=lat), color = "green1", size = 3, alpha = .8) +
+  geom_point(data = hanriver,
+             aes(x=long, y=lat), color = "#085FC8", size = 3, alpha = .8) + 
+  labs(title = "대여 수 상위 20개 대여소와 한강공원") +
+  my_theme + 
+  theme(axis.title.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank())
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+bike %>% group_by(rent_id, NAME, GU, lat, long) %>%
+  summarise(count  = sum(count)) %>% 
+  arrange(desc(count)) %>% filter(rent_id != 583) %>% ungroup() %>% head(20) %>% dplyr::select("대여소번호" = rent_id, "대여소 이름" = NAME, "지역구" = GU, "대여건수" = count)  %>% paged_table
+
+```
+
+위 그림은 서울시에 위치한 10개의 한강공원(파란색)과 상위 20개 대여소(초록색)을 지도에 나타낸 것이며, 위 표는 20개 대여소의 상세정보이다. 영등포구의 대여소가 네 곳으로 가장 많았으며 강서구와 관악구가 각각 세 곳으로 뒤를 이었다. 지도에 표시된 10개의 한강공원 중 상위 20개 대여소와 근접한 곳은 5개에 불과했다. 그렇다면 한강공원과 한강공원에 인접한 대여소의 대여건수 간의 관계는 찾아볼 수 없는 것일까? 이를 알아보기 위해서는 평일과 주말에 따라 대여를 구분할 필요가 있어보인다. 평일에는 주로 출퇴근용으로 따릉이를 이용할 것으로 기대되며, 주말에는 여가의 목적으로 따릉이를 이용할 것이 기대되기 때문이다.
+
+평일과 주말의 따릉이 이용량에는 어떤 차이가 있는지 알아보자.
+
+## 3. 시간과 요일에 따른 이용량 비교
+
+### 1. 요일 파생 변수 추가
+
+주중과 주말을 나누어 이용량 형태를 비교하기 위해서는 대여가 발생한 날짜가 주말인지 평일인지 구분할 필요가 있어보인다. 그래서 아래와 같이 `day` 라는 요일 변수를 기존 데이터에 추가하였다.
+
+```{r include=FALSE}
+#요일 변수 추가
+bike %<>% 
+  mutate(month = lubridate::month(date, label=T, abbr=F), .after = date) %>% 
+  mutate(day = weekdays(date, abbreviate = T))
+```
+
+``` {.r}
+bike %<>% 
+  mutate(day = weekdays(date, abbreviate = T))
+```
+
+### 2. 주중/주말 따릉이 이용 상위 20개 대여소 차이 비교
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=9, fig.height=4}
+
+
+plot1 = bike %>% 
+  filter(day != "일" & day != "토") %>% 
+  group_by(rent_id, NAME, GU, lat, long) %>%
+  summarise(count  = sum(count)) %>% 
+  arrange(desc(count)) %>% head(20) %$%
+  get_googlemap(center = c(mean(long),mean(lat)),
+                zoom = 12,
+                maptype = "roadmap",
+                # color = "bw",
+                size = c(800,800)) %>% 
+  ggmap() +
+  geom_point(data = bike %>% 
+               filter(day != "일" & day != "토") %>%
+               group_by(rent_id, NAME, GU, lat, long) %>%
+               summarise(count  = sum(count)) %>%
+               arrange(desc(count)) %>% head(20) ,
+             aes(x=long, y=lat), color = "green1", size = 3, alpha = .8) +
+  geom_point(data = hanriver,
+             aes(x=long, y=lat), color = "#085FC8", size = 3, alpha = .8) + 
+  labs(title = "평일 대여 수 상위 20개 대여소와 한강공원") +
+  my_theme + 
+  theme(axis.title.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank())
+
+plot2 = bike %>% 
+  filter(day == "일" | day == "토") %>% 
+  group_by(rent_id, NAME, GU, lat, long) %>%
+  summarise(count  = sum(count)) %>% 
+  arrange(desc(count)) %>% head(20) %$%
+  get_googlemap(center = c(mean(long),mean(lat)),
+                zoom = 12,
+                maptype = "roadmap",
+                # color = "bw",
+                size = c(800,800)) %>% 
+  ggmap() +
+  geom_point(data = bike %>% 
+               filter(day == "일" | day == "토") %>%
+               group_by(rent_id, NAME, GU, lat, long) %>%
+               summarise(count  = sum(count)) %>%
+               arrange(desc(count)) %>% head(20) ,
+             aes(x=long, y=lat), color = "green1", size = 3, alpha = .8) +
+  geom_point(data = hanriver,
+             aes(x=long, y=lat), color = "#085FC8", size = 3, alpha = .8) + 
+  labs(title = "주말 대여 수 상위 20개 대여소와 한강공원") +
+  my_theme + 
+  theme(axis.title.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank())
+
+grid.arrange(plot1,plot2,nrow=1)
+```
+
+왼쪽 그림은 평일 대여수 상위 20개의 대여소를 나타낸 그림이고 오른쪽 그림은 주말 대여수 상위 20개의 대여소는 나타낸 그림이다. 가장 두드러지는 차이는 왼쪽 그림에서 강서구에 위치한 대여소 세 곳이 오른쪽 그림, 주말 이용량이 높은 대여소를 표시한 그림에서는 보이지 않는다. 오른쪽 그림에 표시된 대여소 주변에는 한강공원, 서울숲 등 나들이로 좋은 장소들이 위치해 있다.
+
+> 평일 이용량 상위 20개 대여소 ⬇
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+bike %>% filter(day != "일" & day != "토") %>%  group_by(rent_id, NAME, GU, lat, long) %>%
+  summarise(count  = sum(count)) %>% 
+  arrange(desc(count)) %>% filter(rent_id != 583) %>% ungroup() %>% head(20) %>% dplyr::select("대여소번호" = rent_id, "대여소 이름" = NAME, "지역구" = GU, "대여건수" = count)  %>% paged_table
+```
+
+> 주말 이용량 상위 20개 대여소 ⬇
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+bike %>% filter(day == "일" | day == "토") %>%  group_by(rent_id, NAME, GU, lat, long) %>%
+  summarise(count  = sum(count)) %>% 
+  arrange(desc(count)) %>% filter(rent_id != 583) %>% ungroup() %>% head(20) %>% dplyr::select("대여소번호" = rent_id, "대여소 이름" = NAME, "지역구" = GU, "대여건수" = count)  %>% paged_table
+```
+
+### 3. 주중/주말, 대여권 유형별 이용량
+
+공공자전거 따릉이는 일일권(회원), 일일권(비회원), 정기권, 단체권 크게 4가지의 대여권이 있다. 주중과 주말을 기준으로 이 대여권 유형별로 이용량의 차이가 있는지를 알아보기 위해 다음과 같이 시각화를 진행하였다.
+
+```{r echo=FALSE,fig.align='center', fig.width=9, fig.height=4}
+
+get_legend<-function(myggplot){
+  tmp <- ggplot_gtable(ggplot_build(myggplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  return(legend)
+}
+
+weekday_type_plot = bike %>%
+  filter(day != "일" & day != "토") %>% 
+  ggplot(aes(x=hour)) +  
+  geom_bar(aes(fill = type), width = .9) +
+  scale_fill_manual(values = c("lavenderblush","lightblue2","lavender","lightblue4")) + 
+  my_theme +
+  labs(title = "평일 따릉이의 대여권 유형별 이용량",
+       x= "시간",
+       fill = "대여권 유형")+
+  theme(title = element_text(size = 15),
+        axis.title.x = element_text(face = "bold", size = 15),
+        axis.title.y = element_blank(),
+        legend.title = element_text(face = "bold"))
+
+
+weekend_type_plot = bike %>%
+  filter(day == "일" | day == "토") %>%
+  ggplot(aes(x=hour)) +  
+  geom_bar(aes(fill = type), width = .9) +
+  scale_fill_manual(values = c("lavenderblush","lightblue2","lavender","lightblue4")) + 
+  my_theme +
+  labs(title = "주말 따릉이의 대여권 유형별 이용량",
+       x= "시간")+
+  theme(title = element_text(size = 15),
+        axis.title.x = element_text(face = "bold", size = 15),
+        axis.title.y = element_blank(),
+        legend.position = "none")
+
+legend1 = get_legend(weekday_type_plot)
+weekday_type_plot = weekday_type_plot + theme(legend.position = "none")
+
+grid.arrange(weekday_type_plot, weekend_type_plot, legend1, 
+             ncol = 3,
+             widths = c(3,3,.8))
+
+remove(weekend_type_plot)
+remove(weekday_type_plot)
+```
+
+우선 가장 두드러지는 두 그림의 차이는 전체적인 분포이다. 두 그래프에서 y축은 모두 이용건수의 합을 의미하는데 왼쪽 평일 따릉이 이용량 그래프에서는 8시와 18시, 19시에 이용량이 급증하는 것을 알 수 있다. 평일 이 시간대에는 출퇴근 시간으로 따릉이를 이용하는 이용자가 많을 것임을 짐작할 수 있다. 반면 오른쪽 주말 이용량 그래프에서는 5시 이후 이용량이 점차 증가하면서 16시와 17시 경 이용량이 가장 많으며 그 주위로 대칭적인 모양을 띄는 것을 확인할 수 있다. 그렇다면 평일에는 출퇴근 수단으로, 주말에는 여가 수단으로 따릉이를 이용하는 사람들이 많을 것이라고 가정할 수 있다.
+
+또한 총 네 가지 색으로 구분된 '대여권 유형'에서도 비슷한 생각을 할 수 있다. 평일에 비해 주말은 평일에 비해 시간당 일일권 이용자수가 많다. 이는 주말에는 따릉이를 하루를 즐기기 위한 여가 수단으로 이용하는 것이라고 생각할 수 있으며, 정기권 이용자가 비교적 더 많은 평일에는 규칙적으로 출퇴근 시에 따릉이를 이용하는 이용자가 더 많다고 생각할 수 있다.
+
+### 4. 주중/주말 시간별 평균 이동거리 비교
+
+이를 확인하기 위해 주말과 평일 따릉이의 이동거리와 이용시간을 비교해보려고 한다. 그 이유는 '퍼스트-라스트 마일'로 설명할 수 있다. '퍼스트-라스트 마일'이란 대중교통 이용 전후의 거리를 의미한다. '퍼스트 마일'은 출근길 거주지에서 대중교통을 이용하기 위해 이동해야 하는 거리이며, '라스트 마일'은 퇴근길 대중교통 이용 후 거주지까지 가기 위해 이동해야 하는 거리이다. 만약 주말보다 평일의 시간당 평균 이동거리와 이용시간이 짧다면 '퍼스트-라스트 마일'을 움직이기 위해 따릉이를 이용하는 사람이 많다고 생각할 수 있을 것이다.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+bike_vel = bike %>% 
+  filter(time_used != 0 & distance_moved != 0) %>% 
+  mutate(vel = (distance_moved*10 / 1000) / (time_used / 60)) %>% 
+  filter(vel <= 23)
+```
+
+시각화를 진행하기에 앞서 다음과 같은 코드를 통해 속도 변수인 `vel` 을 만들었다. 따릉이에 내장된 GPS 기기 자체의 오류로 이용시간이나 이동거리가 제대로 기록되지 않는 경우가 있어, 이용시간과 이동거리가 제대로 기록되었다고 할 수 있는 것들을 추출하기 위해 `vel` 변수를 만들었다. 이용시간이 존재하지 않거나, 이동거리가 0인 것들은 분석에 도움이 되지 않으며, 이동속도가 비정상적으로 큰 대여 건 또한 데이터에 이상치를 제공해주기에 이용건 별 속도가 25km/h 이하인 것들만 아래 코드를 통해 남겼다.
+
+``` {.r}
+bike_vel = bike %>% 
+  filter(time_used != 0 & distance_moved != 0) %>% 
+  mutate(vel = (distance_moved / 1000) / (time_used / 60)) %>% 
+  filter(vel <= 25 )
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=9, fig.height=4}
+
+bike_vel %>% dplyr::select(hour, distance_moved, day) %>% 
+  mutate( weekend = ifelse( day != "일" & day != "토", "평일", "주말"),
+          weekend = factor(weekend, levels = c("평일","주말"))) %>% 
+  group_by(hour, weekend) %>% 
+  summarise(avg_distance = mean(distance_moved)) %>% 
+  ggplot(aes(x=hour, y=avg_distance)) + 
+  geom_col(aes(fill = avg_distance)) + 
+  scale_fill_gradient(low = "#CEECF5", high = "#045FB4", space = "Lab", guide = "colourbar") +
+  labs(title = "주중/주말에 따른 평균 이동거리 분포",
+       y = "평균 이동 거리(m)",
+       fill = " 평균 이동 거리(m)") +
+  my_theme + 
+  facet_wrap(~weekend, ncol = 2) +
+  theme(legend.position = "bottom") + 
+  theme(plot.title = element_text(hjust = .5, face = "bold", size = 15))
+  
+
+```
+
+위 그림은 평일과 주말 공공자전거의 평균 이동거리를 시간에 따라서 나타낸 것이다. 시간에 따른 평균 이동거리가 확연히 차이나는 것을 볼 수 있다. 주말의 경우에는 앞서 살펴보았던 시간에 따른 이용량에서 가장 많은 이용량이 발생했던 시간인 16시 경에 평균 이동거리가 긴 것을 확인할 수 있다. 평일은 주말에 비해 자전거 이용자들의 평균 이동거리가 짧다는 것을 통해 장거리를 이동하기 보다는 출퇴근 시 '퍼스트-라스트 마일'을 이동하기 위해 자전거를 이용한다는 것을 확인할 수 있었다.
+
+그렇다면 공공자전거를 이용하는 연령 분포에는 차이가 있을까? 다음을 통해 알아보자
+
+### 5. 주중/주말, 연령별 이용량
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=9, fig.height=4}
+
+
+weekday_age_plot = bike %>%
+  filter(day != "일" & day != "토") %>%
+  group_by(hour, age) %>% 
+  summarise(count = n()) %>% 
+  mutate(age = as.character(age)) %>% 
+  ggplot(aes(x=hour, y=count, color = age)) +  
+  geom_line(size = 1) +
+  my_theme + 
+  labs(title = "평일 따릉이의 연령별 이용량",
+       x= "시간")+
+  scale_fill_discrete(name = "연령대") + 
+  theme(title = element_text(size = 15),
+        axis.title.x = element_text(face = "bold", size = 12),
+        axis.title.y = element_blank(),
+        legend.title = element_blank())
+
+
+weekend_age_plot = bike %>%
+  filter(day == "일" | day == "토") %>% 
+  group_by(hour, age) %>% 
+  summarise(count = n()) %>% 
+  mutate(age = as.character(age)) %>% 
+  ggplot(aes(x=hour, y=count, color = age)) +  
+  geom_line(size = 1) +
+  my_theme + 
+  labs(title = "주말 따릉이의 연령별 이용량",
+       x= "시간")+
+  theme(title = element_text(size = 15),
+        axis.title.x = element_text(face = "bold", size = 12),
+        axis.title.y = element_blank(),
+        legend.title = element_blank()) + 
+  theme(legend.position = "none")
+
+legend2 = get_legend(weekday_age_plot)
+weekday_age_plot = weekday_age_plot + theme(legend.position = "none")
+
+grid.arrange(weekday_age_plot, weekend_age_plot, legend2, 
+             ncol = 3,
+             widths = c(3,3,.5))
+
+remove(weekend_age_plot)
+remove(weekday_age_plot)
+```
+
+위 그래프는 평일과 주말을 구분하여 연령대별 따릉이 이용량을 나타낸 그래프이다. 20대와 30대, 40대, 50대는 이용량의 차이만 있을 뿐 전반적인 형태가 비슷하며 60대와 70대이상 이용자는 전체에서 큰 비중을 차지하지 못하는 듯 보인다.
