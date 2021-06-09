@@ -1,0 +1,79 @@
+---
+title: "Large Data Management and Visualization HW 1"
+author: "Kyounghyeon Ko"
+date: '2021 3 25 '
+output: html_document
+---
+
+## Load Library
+```{r load library, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(data.table)
+library(DT)
+```
+
+
+## Load Data
+```{r load data}
+
+setwd("C:/Users/고경현/Desktop/statistics")
+data = fread("billboard.csv")
+```
+
+
+## Data Manipulation
+```{r manipulate data}
+
+data <- data %>%
+  as_tibble
+
+
+data_final = data %>% 
+  as_tibble %>% 
+  
+  
+  #gathering
+  gather(wk, rank, x1st.week:x76th.week) %>% 
+  
+  #change wk variable into week#
+  mutate(wk = wk %>%
+           str_replace("x(\\d*)..[.]week","week\\1")) %>% 
+  
+  #change column name 'artist.inverted' into 'artist'
+  rename( artist = artist.inverted ) %>%
+  
+  #change family name and first name
+  mutate( artist = artist %>% 
+            str_replace(("(\\w* \\w*|\\w*), (\\w*\\s.*|\\w*)"),"\\2 \\1") ) %>% 
+  
+  
+  #make temporary columns; minute and seconds
+  mutate(minute = time %>% 
+           str_replace("(\\d):(\\d+)", "\\1")  %>% as.numeric,
+         sec = time %>%
+           str_replace("(\\d):(\\d+)", "\\2")  %>% as.numeric,
+         time = 60*minute + sec) %>% 
+  
+  #remove temporary columns
+  select(-minute, -sec) %>% 
+  
+  #group_by artist & track
+  group_by(artist, track) %>%
+  
+  #filtering with highest rank
+  filter(rank == min(rank, na.rm=T)) %>% 
+  
+  #remove duplicated rows
+  distinct(track, .keep_all = T) %>%
+  
+  #rename columns
+  rename(highest_rank = rank,
+         highest_rank_date = date.peaked) %>%
+
+  #final data table
+  select(artist, track, highest_rank_date, highest_rank, time, genre)
+
+DT::datatable(data_final,filter = "top")
+```
+
+
